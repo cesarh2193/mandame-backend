@@ -38,7 +38,7 @@ router.get('/', asyncHandler(async (req, res) => {
             CONCAT(p.nombres,' ',p.apellidos) AS nombres,
             p.dpi, p.estado,
             cp.nombre AS puesto,
-            s.sucursal_id AS sucursalId, s.nombre AS sucursalNombre, s.empresa_id AS empresaId,
+            s.sucursal_id AS sucursalId, s.codigo_cad AS codigoCad, s.nombre AS sucursalNombre, s.empresa_id AS empresaId,
             m.persona_id IS NOT NULL AS tambienMotorista,
             m.tipo_motorista AS tipoMotorista, m.placa, m.licencia
      FROM persona p
