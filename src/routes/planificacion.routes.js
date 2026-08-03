@@ -25,11 +25,25 @@ router.get('/', asyncHandler(async (req, res) => {
 }));
 
 // POST /api/planificacion  { sucursalId, fecha, total }
+// Una vez que existe planificación para una sucursal+fecha, queda
+// bloqueada: no se puede volver a guardar otra encima (antes el
+// procedimiento hacía upsert y la sobrescribía en silencio).
 router.post('/',
   requireRole('Supervisor', 'Gerente'),
   requireAccesoSucursal((req) => req.body.sucursalId),
   asyncHandler(async (req, res) => {
     const { sucursalId, fecha, total } = req.body;
+
+    const [existentes] = await pool.query(
+      `SELECT motoristas_plan AS total FROM planificacion WHERE sucursal_id = ? AND fecha = ?`,
+      [sucursalId, fecha]
+    );
+    if (existentes.length > 0) {
+      return res.status(409).json({
+        error: `Ya existe una planificación para esta sucursal y fecha (${existentes[0].total} motoristas).`
+      });
+    }
+
     await callProcedure('sp_registrar_planificacion', [sucursalId, fecha, total, req.user.usuarioId]);
     res.status(201).json({ ok: true });
   })

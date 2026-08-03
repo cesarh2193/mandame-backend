@@ -57,7 +57,8 @@ sucursalesRouter.get('/', asyncHandler(async (req, res) => {
 
   const [rows] = await pool.query(
     `SELECT s.sucursal_id AS id, s.codigo_cad AS codigoCad, s.nombre, s.estado,
-            e.nombre AS empresaNombre, CONCAT(p.nombres,' ',p.apellidos) AS supervisor
+            s.empresa_id AS empresaId, e.nombre AS empresaNombre,
+            s.supervisor_id AS supervisorId, CONCAT(p.nombres,' ',p.apellidos) AS supervisor
      FROM sucursal s
      JOIN empresa e ON e.empresa_id = s.empresa_id
      LEFT JOIN persona p ON p.persona_id = s.supervisor_id
@@ -78,11 +79,15 @@ sucursalesRouter.post('/', requireRole('Admin'), asyncHandler(async (req, res) =
 }));
 
 sucursalesRouter.put('/:id', requireRole('Admin'), asyncHandler(async (req, res) => {
-  const { nombre, supervisorId, estado } = req.body;
+  const { nombre, empresaId, supervisorId, estado } = req.body;
   await pool.query(
-    `UPDATE sucursal SET nombre = COALESCE(?, nombre), supervisor_id = COALESCE(?, supervisor_id), estado = COALESCE(?, estado)
+    `UPDATE sucursal SET
+       nombre = COALESCE(?, nombre),
+       empresa_id = COALESCE(?, empresa_id),
+       supervisor_id = ?,
+       estado = COALESCE(?, estado)
      WHERE sucursal_id = ?`,
-    [nombre, supervisorId, estado, req.params.id]
+    [nombre, empresaId || null, supervisorId || null, estado, req.params.id]
   );
   res.json({ ok: true });
 }));

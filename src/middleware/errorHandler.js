@@ -15,6 +15,15 @@ export function errorHandler(err, req, res, next) {
     return res.status(409).json({ error: 'Ya existe un registro con ese dato único.' });
   }
 
+  if (err?.name === 'MulterError') {
+    const mensaje = err.code === 'LIMIT_FILE_SIZE' ? 'El archivo no puede pesar más de 8 MB.' : err.message;
+    return res.status(400).json({ error: mensaje });
+  }
+
+  if (err?.message?.includes('Formato no soportado') || err?.message?.includes('Formato de imagen no soportado')) {
+    return res.status(400).json({ error: err.message });
+  }
+
   res.status(500).json({ error: 'Error interno del servidor.' });
 }
 
