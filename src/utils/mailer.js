@@ -44,3 +44,32 @@ export async function enviarResumenGerente({ para, sucursalNombre, fecha, resume
   });
   return { simulado: false };
 }
+
+/**
+ * Envía a un Gerente el PDF con el listado de motoristas (entrada,
+ * salida, tiempo trabajado y repartos) cuando ya no queda nadie en
+ * turno en su CAD ese día — un correo aparte del resumen de arriba.
+ */
+export async function enviarCierreCadPDF({ para, sucursalNombre, fecha, pdfBuffer }) {
+  const asunto = `Cierre del día — ${sucursalNombre} — ${fecha}`;
+  const cuerpo = `
+    <p>Ya se cerraron todos los turnos del día en <strong>${sucursalNombre}</strong>.</p>
+    <p>Se adjunta el listado de motoristas con hora de ingreso, salida, tiempo trabajado y repartos.</p>
+    <p style="color:#8B92A0;font-size:12px;">Mandame — correo automático, no responder.</p>
+  `;
+
+  if (!transporter) {
+    console.log('[correo simulado — configura SMTP_HOST en .env para enviarlo de verdad]');
+    console.log(`Para: ${para}\nAsunto: ${asunto}\n${cuerpo.replace(/<[^>]+>/g, '')}\n[PDF adjunto: cierre-cad-${fecha}.pdf]`);
+    return { simulado: true };
+  }
+
+  await transporter.sendMail({
+    from: env.smtp.from,
+    to: para,
+    subject: asunto,
+    html: cuerpo,
+    attachments: [{ filename: `cierre-cad-${fecha}.pdf`, content: pdfBuffer }]
+  });
+  return { simulado: false };
+}

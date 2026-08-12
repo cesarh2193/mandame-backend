@@ -2,6 +2,7 @@ import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import PDFDocument from 'pdfkit';
+import ExcelJS from 'exceljs';
 import { pool } from '../config/db.js';
 import { authenticate, esAdministrador, tieneAccesoSucursal } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
@@ -46,7 +47,7 @@ function construirCondicionesBoleta(req, fecha, sucursalId, motoristaIds) {
   return { condiciones, params };
 }
 
-async function obtenerFilasBoleta(req, fecha, sucursalId, motoristaIds) {
+export async function obtenerFilasBoleta(req, fecha, sucursalId, motoristaIds) {
   const { condiciones, params } = construirCondicionesBoleta(req, fecha, sucursalId, motoristaIds);
 
   const [rows] = await pool.query(
@@ -170,7 +171,10 @@ async function obtenerAsistenciaReporte(req, motoristaId, fechaInicio, fechaFin)
        WHERE tipo_marca_id = (SELECT tipo_marca_id FROM catalogo_tipo_marca WHERE nombre = 'SALIDA')
        GROUP BY asignacion_id, DATE(fecha_hora)
      ) s ON s.asignacion_id = e.asignacion_id AND s.fecha = e.fecha
-     LEFT JOIN asistencia_marca sm ON sm.asignacion_id = s.asignacion_id AND sm.fecha_hora = s.horaSalida
+     LEFT JOIN asistencia_marca sm ON sm.marca_id = (
+       SELECT MAX(am2.marca_id) FROM asistencia_marca am2
+       WHERE am2.asignacion_id = s.asignacion_id AND am2.fecha_hora = s.horaSalida
+     )
      LEFT JOIN usuario u ON u.usuario_id = sm.usuario_registro_id
      LEFT JOIN persona pu ON pu.persona_id = u.persona_id
      WHERE a.motorista_id = ?
@@ -270,6 +274,139 @@ function dibujarReporteAsistenciaPDF(doc, datos, info, fechaInicio, fechaFin) {
 function formatearFecha(fecha) {
   const [anio, mes, dia] = String(fecha).slice(0, 10).split('-');
   return `${dia}/${mes}/${anio}`;
+}
+
+// Dibuja una boleta ("REPORTE DIARIO PERSONAL") a media carta, dentro
+// de la mitad superior o inferior de la hoja (posicion 0 = arriba,
+// 1 = abajo) — dos motoristas por hoja, con los datos reales de
+// asistencia/cierre de turno ya llenos y solo el tipo de turno y el
+// sello para completar a mano.
+function dibujarBoletaNueva(doc, fila, posicion) {
+  const anchoPagina = doc.page.width;
+  const altoMitad = doc.page.height / 2;
+  const y0 = posicion * altoMitad;
+  const margenX = 40;
+  const anchoUtil = anchoPagina - margenX * 2;
+  const margenSuperior = 18;
+  const altoBoleta = altoMitad - margenSuperior - 10;
+  const yFinCuerpo = y0 + margenSuperior + altoBoleta;
+  const yPie = yFinCuerpo - 24;
+
+  doc.rect(margenX, y0 + margenSuperior, anchoUtil, altoBoleta).stroke();
+
+  // Encabezado: logo, título y fecha, separados por una línea vertical.
+  const yTop = y0 + margenSuperior;
+  const xDivisorFecha = margenX + anchoUtil - 150;
+  try {
+    doc.image(LOGO_MANDAME_PATH, margenX + 8, yTop + 6, { width: 75 });
+  } catch {
+    // Si el logo no está disponible en el entorno de ejecución, se ignora.
+  }
+  doc.fillColor('#000').font('Helvetica-Bold').fontSize(13)
+    .text('REPORTE DIARIO PERSONAL', margenX + 90, yTop + 16, { width: xDivisorFecha - (margenX + 100) });
+
+  doc.moveTo(xDivisorFecha, yTop).lineTo(xDivisorFecha, yTop + 44).stroke();
+  doc.font('Helvetica-Bold').fontSize(9).text('FECHA:', xDivisorFecha + 12, yTop + 10);
+  doc.font('Helvetica').fontSize(9).text(fila.fecha ? formatearFecha(fila.fecha) : '', xDivisorFecha + 55, yTop + 10);
+  doc.moveTo(xDivisorFecha + 12, yTop + 24).lineTo(margenX + anchoUtil - 10, yTop + 24).stroke();
+
+  doc.moveTo(margenX, yTop + 44).lineTo(margenX + anchoUtil, yTop + 44).stroke();
+
+  // Columna izquierda: campos ya llenos con los datos reales.
+  let y = yTop + 56;
+  const xLabel = margenX + 15;
+  const xValor = margenX + 145;
+  const xLineaFin = margenX + 300;
+
+  function campo(label, valor) {
+    doc.font('Helvetica-Bold').fontSize(9).text(label, xLabel, y);
+    if (valor != null && valor !== '') doc.font('Helvetica').fontSize(9).text(String(valor), xValor, y);
+    doc.moveTo(xValor - 5, y + 12).lineTo(xLineaFin, y + 12).stroke();
+    y += 17;
+  }
+
+  const horasTrabajadas = fila.minutosTrabajados != null ? (fila.minutosTrabajados / 60).toFixed(1) : '';
+
+  campo('NOMBRE:', fila.nombre);
+  campo('CÓDIGO:', fila.placa);
+  campo('CAD:', fila.sucursal);
+  campo('CANTIDAD DE REPARTO:', fila.cantidadRepartos);
+  campo('HORAS TRABAJADAS:', horasTrabajadas);
+  campo('HORA INGRESO:', fila.horaIngreso);
+  campo('HORA SALIDA:', fila.horaSalida);
+
+  // OBSERVACIONES: máximo 5 renglones para escribir a mano, con un
+  // margen amplio antes de la línea de firma (no se pega a ella).
+  doc.font('Helvetica-Bold').fontSize(9).text('OBSERVACIONES:', xLabel, y);
+  const yInicioObs = y + 14;
+  const margenAntesFirma = 30;
+  const numLineasObs = 5;
+  const espaciadoObs = ((yPie - margenAntesFirma) - yInicioObs) / numLineasObs;
+  let yObs = yInicioObs;
+  for (let i = 0; i < numLineasObs; i++) {
+    yObs += espaciadoObs;
+    doc.moveTo(xLabel, yObs).lineTo(xLineaFin, yObs).stroke();
+  }
+  if (fila.observacion) {
+    doc.font('Helvetica').fontSize(8).text(fila.observacion, xLabel, yInicioObs - 9, { width: xLineaFin - xLabel });
+  }
+
+  // Columna derecha: tipo de turno (marcado según las horas trabajadas)
+  // y sello, que se sella a mano.
+  const xDer = margenX + anchoUtil - 175;
+  const anchoDer = 160;
+  const yTurno = yTop + 56;
+
+  const horasNum = fila.minutosTrabajados != null ? fila.minutosTrabajados / 60 : null;
+  let turnoMarcado = null;
+  if (horasNum != null) {
+    if (Math.abs(horasNum - 4) <= 0.5) turnoMarcado = 'CUATRO';
+    else if (Math.abs(horasNum - 8) <= 0.5) turnoMarcado = 'OCHO';
+    else turnoMarcado = 'OTRO';
+  }
+
+  function casilla(x, yy, marcada) {
+    doc.rect(x, yy, 10, 10).stroke();
+    if (marcada) doc.font('Helvetica-Bold').fontSize(9).text('X', x + 1.5, yy - 1);
+  }
+
+  const altoTurno = 82;
+  doc.rect(xDer, yTurno, anchoDer, altoTurno).stroke();
+  doc.font('Helvetica-Bold').fontSize(9).text('TIPO DE TURNO', xDer + 10, yTurno + 8);
+
+  let yOpcion = yTurno + 26;
+  [{ label: '4 HORAS', tipo: 'CUATRO' }, { label: '8 HORAS', tipo: 'OCHO' }].forEach(({ label, tipo }) => {
+    casilla(xDer + 12, yOpcion - 2, turnoMarcado === tipo);
+    doc.font('Helvetica').fontSize(8).text(label, xDer + 28, yOpcion);
+    yOpcion += 18;
+  });
+  casilla(xDer + 12, yOpcion - 2, turnoMarcado === 'OTRO');
+  doc.font('Helvetica').fontSize(8).text('OTRO:', xDer + 28, yOpcion);
+  doc.moveTo(xDer + 65, yOpcion + 7).lineTo(xDer + anchoDer - 10, yOpcion + 7).stroke();
+  if (turnoMarcado === 'OTRO' && horasNum != null) {
+    doc.font('Helvetica').fontSize(7).text(`${horasNum.toFixed(1)} h`, xDer + 68, yOpcion - 1);
+  }
+
+  // Recuadro de sello, un poco más abajo del bloque de turno, con la
+  // etiqueta "SELLO" como pestaña en la esquina superior izquierda.
+  const ySello = yTurno + altoTurno + 18;
+  const altoSello = yPie - 12 - ySello;
+  doc.rect(xDer, ySello, anchoDer, altoSello).stroke();
+  doc.rect(xDer, ySello, 50, 15).fillAndStroke('#EAEAEA', '#000000');
+  doc.fillColor('#000').font('Helvetica-Bold').fontSize(8).text('SELLO', xDer + 8, ySello + 4);
+
+  // Firmas al pie de la boleta.
+  const anchoFirma = (anchoUtil - 50) / 2;
+  const xFirma1 = margenX + 15;
+  const xFirma2 = margenX + 35 + anchoFirma;
+
+  doc.moveTo(xFirma1, yPie).lineTo(xFirma1 + anchoFirma, yPie).stroke();
+  doc.font('Helvetica').fontSize(7)
+    .text('NOMBRE, FIRMA Y CÓDIGO DE CONTROLADOR', xFirma1, yPie + 4, { width: anchoFirma, align: 'center' });
+
+  doc.moveTo(xFirma2, yPie).lineTo(xFirma2 + anchoFirma, yPie).stroke();
+  doc.font('Helvetica').fontSize(7)
+    .text('FIRMA MOTORISTA', xFirma2, yPie + 4, { width: anchoFirma, align: 'center' });
 }
 
 // Dibuja una boleta dentro de la mitad superior o inferior de la hoja
@@ -467,6 +604,45 @@ router.get('/boleta', asyncHandler(async (req, res) => {
       const posicion = i % 2;
       if (i > 0 && posicion === 0) doc.addPage();
       dibujarBoleta(doc, fila, posicion);
+    });
+  }
+
+  doc.end();
+}));
+
+// GET /api/informes/boleta-nueva?fecha=&sucursalId=&motoristaIds=1,2,3
+// Igual que /boleta (mismos motoristas con asistencia y cierre de turno
+// autorizado), pero con el formato "Reporte diario personal" a media
+// carta: nombre, placa, CAD, repartos, horas trabajadas y horas de
+// ingreso/salida ya llenos; tipo de turno y sello quedan para
+// completar a mano al momento de usar la boleta.
+router.get('/boleta-nueva', asyncHandler(async (req, res) => {
+  const { fecha, sucursalId, motoristaIds, motoristaId } = req.query;
+  if (!fecha) {
+    return res.status(400).json({ error: 'La fecha es requerida.' });
+  }
+  if (sucursalId && !tieneAccesoSucursal(req, sucursalId)) {
+    return res.status(403).json({ error: 'No tienes acceso a esta sucursal.' });
+  }
+
+  const filas = await obtenerFilasBoleta(req, fecha, sucursalId, motoristaIds || motoristaId);
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="boletas-${fecha}.pdf"`);
+
+  const doc = new PDFDocument({ margin: 0, size: 'LETTER' });
+  doc.pipe(res);
+
+  if (filas.length === 0) {
+    doc.font('Helvetica').fontSize(13).text(
+      'No hay motoristas con asistencia y cierre de turno registrado para esta fecha.',
+      40, 40, { width: doc.page.width - 80 }
+    );
+  } else {
+    filas.forEach((fila, i) => {
+      const posicion = i % 2;
+      if (i > 0 && posicion === 0) doc.addPage();
+      dibujarBoletaNueva(doc, fila, posicion);
     });
   }
 
@@ -877,6 +1053,52 @@ router.get('/asistencia-general', asyncHandler(async (req, res) => {
   doc.pipe(res);
   dibujarAsistenciaGeneralPDF(doc, filas, fecha);
   doc.end();
+}));
+
+// GET /api/informes/asistencia-general/excel?fecha=&sucursalId=
+// Mismo listado que /asistencia-general, en formato .xlsx.
+router.get('/asistencia-general/excel', asyncHandler(async (req, res) => {
+  const { fecha, sucursalId } = req.query;
+  if (!fecha) {
+    return res.status(400).json({ error: 'La fecha es requerida.' });
+  }
+  if (sucursalId && !tieneAccesoSucursal(req, sucursalId)) {
+    return res.status(403).json({ error: 'No tienes acceso a esta sucursal.' });
+  }
+
+  const filas = await obtenerFilasBoleta(req, fecha, sucursalId);
+
+  const libro = new ExcelJS.Workbook();
+  const hoja = libro.addWorksheet('Asistencia general');
+
+  hoja.columns = [
+    { header: 'CAD', key: 'sucursal', width: 20 },
+    { header: 'Cod', key: 'codigo', width: 10 },
+    { header: 'Nombre', key: 'nombre', width: 32 },
+    { header: 'Entrada', key: 'horaIngreso', width: 12 },
+    { header: 'Salida', key: 'horaSalida', width: 12 },
+    { header: 'Repartos', key: 'cantidadRepartos', width: 12 },
+    { header: 'Tarifa', key: 'tarifa', width: 18 }
+  ];
+  hoja.getRow(1).font = { bold: true };
+
+  filas.forEach((fila) => {
+    hoja.addRow({
+      sucursal: fila.sucursal || '',
+      codigo: fila.codigo ?? '',
+      nombre: fila.nombre || '',
+      horaIngreso: fila.horaIngreso || '',
+      horaSalida: fila.horaSalida || '',
+      cantidadRepartos: fila.cantidadRepartos ?? 0,
+      tarifa: fila.tarifa || ''
+    });
+  });
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="asistencia-general-${fecha}.xlsx"`);
+
+  await libro.xlsx.write(res);
+  res.end();
 }));
 
 export default router;
