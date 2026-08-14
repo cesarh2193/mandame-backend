@@ -4,15 +4,20 @@ import { env } from '../config/env.js';
 
 let driveClient = null;
 
-// Cliente perezoso: si no hay GOOGLE_DRIVE_KEY_FILE/GOOGLE_DRIVE_FOLDER_ID
-// configurados, devuelve null y quien llama simplemente omite la subida.
+// Cliente perezoso: si falta cualquiera de las variables de OAuth2 o
+// el folderId, devuelve null y quien llama simplemente omite la
+// subida. OAuth2 con refresh token (no cuenta de servicio): una
+// cuenta de servicio sin Workspace no tiene cuota de almacenamiento
+// propia y no puede subir archivos ("Service Accounts do not have
+// storage quota") — con OAuth2 el archivo se sube a nombre del
+// usuario dueño del refresh token, que sí tiene cuota.
 function obtenerDrive() {
-  if (!env.googleDrive.keyFile || !env.googleDrive.folderId) return null;
+  const { folderId, oauthClientId, oauthClientSecret, oauthRefreshToken } = env.googleDrive;
+  if (!folderId || !oauthClientId || !oauthClientSecret || !oauthRefreshToken) return null;
+
   if (!driveClient) {
-    const auth = new google.auth.GoogleAuth({
-      keyFile: env.googleDrive.keyFile,
-      scopes: ['https://www.googleapis.com/auth/drive']
-    });
+    const auth = new google.auth.OAuth2(oauthClientId, oauthClientSecret);
+    auth.setCredentials({ refresh_token: oauthRefreshToken });
     driveClient = google.drive({ version: 'v3', auth });
   }
   return driveClient;
@@ -43,7 +48,7 @@ async function buscarOCrearCarpeta(drive, nombre, carpetaPadreId) {
 export async function subirBoletaADrive({ rutaLocal, nombreArchivo, mimeType, fecha, cad, driveFileIdExistente }) {
   const drive = obtenerDrive();
   if (!drive) {
-    console.warn('[drive] GOOGLE_DRIVE_KEY_FILE/GOOGLE_DRIVE_FOLDER_ID no configurados: se omite la subida a Drive.');
+    console.warn('[drive] Faltan variables de OAuth2 (GOOGLE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN) o GOOGLE_DRIVE_FOLDER_ID: se omite la subida a Drive.');
     return null;
   }
 

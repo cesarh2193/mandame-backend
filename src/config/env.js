@@ -32,7 +32,13 @@ export const env = {
   googleDrive: {
     // Opcionales: si faltan, la subida a Drive simplemente se omite
     // (con un aviso en el log) y el guardado local sigue funcionando.
-    keyFile: process.env.GOOGLE_DRIVE_KEY_FILE || null,
-    folderId: process.env.GOOGLE_DRIVE_FOLDER_ID || null
+    // OAuth2 con refresh token — no cuenta de servicio: las cuentas de
+    // servicio sin Workspace no tienen cuota de almacenamiento propia
+    // y no pueden subir archivos ("Service Accounts do not have
+    // storage quota").
+    folderId: process.env.GOOGLE_DRIVE_FOLDER_ID || null,
+    oauthClientId: process.env.GOOGLE_OAUTH_CLIENT_ID || null,
+    oauthClientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET || null,
+    oauthRefreshToken: process.env.GOOGLE_OAUTH_REFRESH_TOKEN || null
   }
 };
