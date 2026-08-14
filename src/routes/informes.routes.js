@@ -76,7 +76,7 @@ export async function obtenerFilasBoleta(req, fecha, sucursalId, motoristaIds) {
   return rows;
 }
 
-async function obtenerMotoristasBoleta(req, fecha, sucursalId) {
+export async function obtenerMotoristasBoleta(req, fecha, sucursalId) {
   const condiciones = ['r.fecha = ?', "r.estado = 'AUTORIZADO'"];
   const params = [fecha];
 

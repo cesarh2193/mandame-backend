@@ -28,5 +28,11 @@ export const env = {
     user: process.env.SMTP_USER || null,
     password: process.env.SMTP_PASSWORD || null,
     from: process.env.SMTP_FROM || 'Mandame <no-responder@mandame.com>'
+  },
+  googleDrive: {
+    // Opcionales: si faltan, la subida a Drive simplemente se omite
+    // (con un aviso en el log) y el guardado local sigue funcionando.
+    keyFile: process.env.GOOGLE_DRIVE_KEY_FILE || null,
+    folderId: process.env.GOOGLE_DRIVE_FOLDER_ID || null
   }
 };
