@@ -92,4 +92,40 @@ router.get('/cuadre-cads', asyncHandler(async (req, res) => {
   res.json(rows);
 }));
 
+// GET /api/dashboard/repartos-hoy?sucursalId=
+// Cantidad de repartos que cada motorista tuvo al cerrar turno hoy —
+// para la gráfica que ve un no-Administrador en "Hoy" (reusa el mismo
+// filtro de sucursal que /hoy). Excluye los cierres anulados.
+router.get('/repartos-hoy', asyncHandler(async (req, res) => {
+  const { sucursalId } = req.query;
+  let filtroSucursal = '1=1';
+  const params = [];
+
+  if (sucursalId) {
+    if (!tieneAccesoSucursal(req, sucursalId)) {
+      return res.status(403).json({ error: 'No tienes acceso a esta sucursal.' });
+    }
+    filtroSucursal = 'a.sucursal_id = ?';
+    params.push(Number(sucursalId));
+  } else if (!esAdministrador(req)) {
+    filtroSucursal = 'a.sucursal_id IN (?)';
+    params.push(req.user.sucursalIds?.length ? req.user.sucursalIds : [0]);
+  }
+
+  const [rows] = await pool.query(
+    `SELECT CONCAT(p.nombres,' ',p.apellidos) AS nombre, s.nombre AS sucursal,
+            r.cantidad_entregas AS repartos
+     FROM reparto r
+     JOIN asignacion a ON a.asignacion_id = r.asignacion_id
+     JOIN motorista m ON m.persona_id = a.motorista_id
+     JOIN persona p ON p.persona_id = m.persona_id
+     JOIN sucursal s ON s.sucursal_id = a.sucursal_id
+     WHERE r.fecha = CURDATE() AND r.estado <> 'ANULADO' AND ${filtroSucursal}
+     ORDER BY r.cantidad_entregas DESC`,
+    params
+  );
+
+  res.json(rows);
+}));
+
 export default router;

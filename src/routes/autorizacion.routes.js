@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { pool } from '../config/db.js';
+import { pool, callProcedure } from '../config/db.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { autorizarYNotificar } from '../services/autorizacion.service.js';
@@ -64,6 +64,29 @@ router.post('/autorizar', requireRole('Supervisor', 'Gerente'), asyncHandler(asy
 
   const { autorizados, correosEnviados } = await autorizarYNotificar(repartoIds, req.user.usuarioId);
   res.json({ ok: true, autorizados, correosEnviados });
+}));
+
+// POST /api/autorizacion/:repartoId/revertir — Solo Administrador.
+// Deshace un cierre de turno ya autorizado que se hizo por error:
+// borra la marca de SALIDA de ese día (el motorista vuelve a
+// aparecer "en turno" en Cierre de turno, listo para cerrarse bien)
+// y marca el reparto como ANULADO (no se borra, queda trazabilidad
+// en auditoria). También recalcula el resumen del CAD (cierre_dia).
+router.post('/:repartoId/revertir', requireRole(), asyncHandler(async (req, res) => {
+  const repartoId = Number(req.params.repartoId);
+  if (!repartoId) {
+    return res.status(400).json({ error: 'Reparto inválido.' });
+  }
+
+  try {
+    const [resultado] = await callProcedure('sp_revertir_cierre', [repartoId, req.user.usuarioId]);
+    res.json({ ok: true, asignacionId: resultado?.asignacionId, sucursalId: resultado?.sucursalId });
+  } catch (err) {
+    if (err.sqlState === '45000') {
+      return res.status(400).json({ error: err.sqlMessage });
+    }
+    throw err;
+  }
 }));
 
 export default router;

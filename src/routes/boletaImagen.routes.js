@@ -3,10 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import multer from 'multer';
 import { pool } from '../config/db.js';
-import { authenticate, requireRole, tieneAccesoSucursal } from '../middleware/auth.js';
+import { authenticate, requireRole, tieneAccesoSucursal, esAdministrador } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { obtenerMotoristasBoleta } from './informes.routes.js';
-import { subirBoletaADrive } from '../utils/googleDrive.js';
+import { subirBoletaADrive, renombrarBoletaEnDrive } from '../utils/googleDrive.js';
 
 const router = Router();
 router.use(authenticate);
@@ -62,7 +62,18 @@ router.get('/', asyncHandler(async (req, res) => {
 // POST /api/boleta-imagen/:motoristaId?fecha=&sucursalId=  (form-data: imagen)
 // Guarda el archivo en el servidor y, si Drive está configurado, lo
 // sube también dentro de <raíz>/<fecha>/<CAD>/. Si ya existe una
-// boleta de ese motorista para esa fecha, la reemplaza (no duplica).
+// boleta de ese motorista para esa fecha, NO se borra: se renombra
+// (local y en Drive) marcándola como reemplazada, y la nueva queda
+// como la boleta activa — así queda bitácora de que hubo un
+// reemplazo, sin perder la que subieron antes.
+//
+// Seguridad: solo se puede subir/reemplazar la boleta del día de
+// hoy — nunca la de una fecha pasada (o futura) — salvo que quien
+// sube sea Administrador, que sí puede corregir boletas de otros
+// días. Esto evita que el resto de roles altere el registro de un
+// día ya cerrado. La validación se hace acá, no solo en el
+// frontend, porque el frontend es fácil de saltarse llamando la API
+// directo.
 router.post(
   '/:motoristaId',
   requireRole('Supervisor', 'Digitador', 'Gerente'),
@@ -81,6 +92,16 @@ router.post(
       return res.status(400).json({ error: 'Debes adjuntar una imagen.' });
     }
 
+    if (!esAdministrador(req)) {
+      const [[{ hoy }]] = await pool.query('SELECT CURDATE() AS hoy');
+      if (fecha !== hoy) {
+        // multer ya guardó el archivo en disco antes de llegar acá —
+        // si se rechaza la subida, no lo dejamos huérfano.
+        fs.unlink(req.file.path, () => {});
+        return res.status(403).json({ error: 'Solo se puede subir o reemplazar la boleta del día de hoy.' });
+      }
+    }
+
     const [[persona]] = await pool.query(
       `SELECT CONCAT(p.nombres,' ',p.apellidos) AS nombre
        FROM motorista m JOIN persona p ON p.persona_id = m.persona_id
@@ -95,7 +116,23 @@ router.post(
     );
 
     if (existente) {
-      fs.unlink(path.join(UPLOADS_BOLETAS_DIR, existente.archivo_local), () => {});
+      const marca = `reemplazada ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
+
+      // Local: se renombra, no se borra — queda en el disco como copia.
+      const extAnterior = path.extname(existente.archivo_local);
+      const nombreLocalNuevo = `${existente.archivo_local.slice(0, -extAnterior.length)}-${marca.replace(/[: ]/g, '-')}${extAnterior}`;
+      fs.rename(
+        path.join(UPLOADS_BOLETAS_DIR, existente.archivo_local),
+        path.join(UPLOADS_BOLETAS_DIR, nombreLocalNuevo),
+        () => {}
+      );
+
+      // Drive: mismo criterio, se renombra el archivo anterior en vez
+      // de sobrescribirlo.
+      if (existente.drive_file_id) {
+        const nombreDriveAnterior = `${persona?.nombre || 'Motorista'} - ${fecha} (${marca})${extAnterior}`;
+        await renombrarBoletaEnDrive(existente.drive_file_id, nombreDriveAnterior);
+      }
     }
 
     const ext = path.extname(req.file.filename);
@@ -106,19 +143,23 @@ router.post(
       nombreArchivo: nombreDrive,
       mimeType: req.file.mimetype,
       fecha,
-      cad: sucursal?.nombre || 'CAD',
-      driveFileIdExistente: existente?.drive_file_id || null
+      cad: sucursal?.nombre || 'CAD'
     });
 
     if (existente) {
+      // Ojo: si la subida a Drive falló, NO se debe caer de vuelta al
+      // drive_file_id anterior — ese archivo ya quedó renombrado como
+      // "reemplazada" y seguir apuntándolo confundiría al abrir "Ver
+      // boleta" (mostraría la vieja con nombre de reemplazada). Queda
+      // en null hasta que se vuelva a intentar subir.
       await pool.query(
         `UPDATE boleta_motorista
          SET archivo_local = ?, drive_file_id = ?, drive_web_link = ?, usuario_id = ?, sucursal_id = ?, actualizado_en = NOW()
          WHERE boleta_id = ?`,
         [
           req.file.filename,
-          resultadoDrive?.driveFileId ?? existente.drive_file_id,
-          resultadoDrive?.driveWebLink ?? existente.drive_web_link,
+          resultadoDrive?.driveFileId ?? null,
+          resultadoDrive?.driveWebLink ?? null,
           req.user.usuarioId,
           Number(sucursalId),
           existente.boleta_id

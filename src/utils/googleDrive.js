@@ -39,13 +39,15 @@ async function buscarOCrearCarpeta(drive, nombre, carpetaPadreId) {
 }
 
 /**
- * Sube (o reemplaza, si viene driveFileIdExistente) la imagen de una
- * boleta dentro de <carpeta raíz>/<fecha>/<CAD>/ en Drive. Nunca
- * lanza: si Drive no está configurado o la subida falla por cualquier
- * razón, devuelve null y deja el detalle en el log — el guardado
- * local de la boleta no debe depender de esto.
+ * Sube la imagen de una boleta dentro de <carpeta raíz>/<fecha>/<CAD>/
+ * en Drive, siempre como archivo nuevo (no reemplaza contenido de un
+ * archivo existente — para eso primero se renombra el anterior con
+ * renombrarBoletaEnDrive, así queda de bitácora). Nunca lanza: si
+ * Drive no está configurado o la subida falla por cualquier razón,
+ * devuelve null y deja el detalle en el log — el guardado local de
+ * la boleta no debe depender de esto.
  */
-export async function subirBoletaADrive({ rutaLocal, nombreArchivo, mimeType, fecha, cad, driveFileIdExistente }) {
+export async function subirBoletaADrive({ rutaLocal, nombreArchivo, mimeType, fecha, cad }) {
   const drive = obtenerDrive();
   if (!drive) {
     console.warn('[drive] Faltan variables de OAuth2 (GOOGLE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN) o GOOGLE_DRIVE_FOLDER_ID: se omite la subida a Drive.');
@@ -55,27 +57,33 @@ export async function subirBoletaADrive({ rutaLocal, nombreArchivo, mimeType, fe
   try {
     const carpetaFecha = await buscarOCrearCarpeta(drive, fecha, env.googleDrive.folderId);
     const carpetaCad = await buscarOCrearCarpeta(drive, cad, carpetaFecha);
-    const media = { mimeType, body: fs.createReadStream(rutaLocal) };
-
-    if (driveFileIdExistente) {
-      const { data } = await drive.files.update({
-        fileId: driveFileIdExistente,
-        addParents: carpetaCad,
-        requestBody: { name: nombreArchivo },
-        media,
-        fields: 'id, webViewLink'
-      });
-      return { driveFileId: data.id, driveWebLink: data.webViewLink };
-    }
 
     const { data } = await drive.files.create({
       requestBody: { name: nombreArchivo, parents: [carpetaCad] },
-      media,
+      media: { mimeType, body: fs.createReadStream(rutaLocal) },
       fields: 'id, webViewLink'
     });
     return { driveFileId: data.id, driveWebLink: data.webViewLink };
   } catch (err) {
     console.error('[drive] No se pudo subir la boleta a Google Drive:', err.message);
     return null;
+  }
+}
+
+/**
+ * Renombra (sin tocar el contenido) una boleta ya subida a Drive —
+ * se usa para dejarla marcada como "reemplazada" antes de subir la
+ * nueva, en vez de perderla. Nunca lanza, solo loguea si falla.
+ */
+export async function renombrarBoletaEnDrive(driveFileId, nuevoNombre) {
+  const drive = obtenerDrive();
+  if (!drive || !driveFileId) return false;
+
+  try {
+    await drive.files.update({ fileId: driveFileId, requestBody: { name: nuevoNombre } });
+    return true;
+  } catch (err) {
+    console.error('[drive] No se pudo renombrar la boleta anterior en Drive:', err.message);
+    return false;
   }
 }
