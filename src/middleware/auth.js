@@ -65,3 +65,27 @@ export function requireAccesoSucursal(getSucursalId) {
     next();
   };
 }
+
+/**
+ * Verifica el token de un link público para subir boleta (?token=... en
+ * la URL, o el mismo campo en el body de la subida). A propósito NO pasa
+ * por `authenticate`: este JWT no tiene usuarioId ni roles, solo
+ * { scope: 'upload_boleta', sucursalId, fecha } — un motorista sin cuenta
+ * lo usa desde un link que le comparte su supervisor. Deja el resultado
+ * en req.boletaToken para que la ruta nunca confíe en sucursalId/fecha
+ * que le mande el cliente por otro lado.
+ */
+export function verificarTokenBoleta(req, res, next) {
+  const token = req.query?.token || req.body?.token;
+  if (!token) {
+    return res.status(401).json({ error: 'Falta el token del link.' });
+  }
+  try {
+    const payload = jwt.verify(token, env.jwt.secret);
+    if (payload.scope !== 'upload_boleta') throw new Error('scope inválido');
+    req.boletaToken = { sucursalId: payload.sucursalId, fecha: payload.fecha };
+    next();
+  } catch {
+    return res.status(401).json({ error: 'Este link ya no es válido o venció. Pedile a tu supervisor que te comparta uno nuevo.' });
+  }
+}

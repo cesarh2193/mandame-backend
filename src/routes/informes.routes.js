@@ -4,10 +4,11 @@ import path from 'node:path';
 import PDFDocument from 'pdfkit';
 import ExcelJS from 'exceljs';
 import { pool } from '../config/db.js';
-import { authenticate, esAdministrador, tieneAccesoSucursal } from '../middleware/auth.js';
+import { authenticate, esAdministrador, tieneAccesoSucursal, requireRole } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { UPLOADS_DIR } from './personal.routes.js';
 import { TIPOS_DOCUMENTO_PERSONAL } from '../config/documentosPersonal.js';
+import { UPLOADS_BOLETAS_DIR } from '../config/uploadsBoleta.js';
 
 const LOGO_MANDAME_PATH = path.resolve(process.cwd(), '../mandame-frontend/src/assets/logo-mandame.png');
 
@@ -52,7 +53,7 @@ export async function obtenerFilasBoleta(req, fecha, sucursalId, motoristaIds) {
   const { condiciones, params } = construirCondicionesBoleta(req, fecha, sucursalId, motoristaIds);
 
   const [rows] = await pool.query(
-    `SELECT p.codigo_interno AS codigo, CONCAT(p.nombres,' ',p.apellidos) AS nombre,
+    `SELECT a.motorista_id AS motoristaId, p.codigo_interno AS codigo, CONCAT(p.nombres,' ',p.apellidos) AS nombre,
             m.placa, s.nombre AS sucursal, r.fecha, r.cantidad_entregas AS cantidadRepartos,
             r.observacion, t.descripcion AS tarifa,
             TIME_FORMAT(ing.fecha_hora, '%H:%i') AS horaIngreso,
@@ -644,6 +645,118 @@ router.get('/boleta-nueva', asyncHandler(async (req, res) => {
       const posicion = i % 2;
       if (i > 0 && posicion === 0) doc.addPage();
       dibujarBoletaNueva(doc, fila, posicion);
+    });
+  }
+
+  doc.end();
+}));
+
+// GET /api/informes/revision-boletas?fecha=&sucursalId=
+// Mismos motoristas y cantidad de repartos que "Boletas cierre"
+// (obtenerFilasBoleta), cruzados con si ya se subió la boleta de cada
+// uno ese día — para que un supervisor detecte de un vistazo a quién
+// le falta subir la suya.
+router.get('/revision-boletas', requireRole('Gerente', 'Supervisor', 'Digitador'), asyncHandler(async (req, res) => {
+  const { fecha, sucursalId } = req.query;
+  if (!fecha || !sucursalId) {
+    return res.status(400).json({ error: 'La fecha y el CAD son requeridos.' });
+  }
+  if (!tieneAccesoSucursal(req, sucursalId)) {
+    return res.status(403).json({ error: 'No tienes acceso a esta sucursal.' });
+  }
+
+  const filas = await obtenerFilasBoleta(req, fecha, sucursalId);
+  const [boletas] = await pool.query(
+    'SELECT motorista_id AS motoristaId FROM boleta_motorista WHERE fecha = ? AND sucursal_id = ?',
+    [fecha, Number(sucursalId)]
+  );
+  const conBoleta = new Set(boletas.map((b) => b.motoristaId));
+
+  res.json(filas.map((f) => ({
+    motoristaId: f.motoristaId,
+    codigo: f.codigo,
+    nombre: f.nombre,
+    fecha: f.fecha,
+    cantidadRepartos: f.cantidadRepartos,
+    tieneBoleta: conBoleta.has(f.motoristaId)
+  })));
+}));
+
+// GET /api/informes/revision-boletas/pdf?fecha=&sucursalId=
+// Mismos datos que el endpoint anterior, en una cuadrícula de 4 boletas
+// por hoja (2x2) con la imagen y su etiqueta debajo.
+router.get('/revision-boletas/pdf', requireRole('Gerente', 'Supervisor', 'Digitador'), asyncHandler(async (req, res) => {
+  const { fecha, sucursalId } = req.query;
+  if (!fecha || !sucursalId) {
+    return res.status(400).json({ error: 'La fecha y el CAD son requeridos.' });
+  }
+  if (!tieneAccesoSucursal(req, sucursalId)) {
+    return res.status(403).json({ error: 'No tienes acceso a esta sucursal.' });
+  }
+
+  const filas = await obtenerFilasBoleta(req, fecha, sucursalId);
+  const [boletas] = await pool.query(
+    'SELECT motorista_id AS motoristaId, archivo_local AS archivoLocal FROM boleta_motorista WHERE fecha = ? AND sucursal_id = ?',
+    [fecha, Number(sucursalId)]
+  );
+  const archivoPorMotorista = new Map(boletas.map((b) => [b.motoristaId, b.archivoLocal]));
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="revision-boletas-${fecha}.pdf"`);
+
+  const doc = new PDFDocument({ margin: 40 });
+  doc.pipe(res);
+
+  if (filas.length === 0) {
+    doc.font('Helvetica').fontSize(13).text(
+      'No hay motoristas con cierre de turno registrado para esta fecha.',
+      40, 40, { width: doc.page.width - 80 }
+    );
+  } else {
+    const margenX = 40;
+    const margenY = 40;
+    const anchoUtil = doc.page.width - margenX * 2;
+    const altoUtil = doc.page.height - margenY * 2;
+    const colAncho = anchoUtil / 2;
+    const filaAlto = altoUtil / 2;
+    const imagenAlto = filaAlto - 60;
+
+    filas.forEach((f, i) => {
+      const posicion = i % 4;
+      if (i > 0 && posicion === 0) doc.addPage();
+
+      const col = posicion % 2;
+      const fil = Math.floor(posicion / 2);
+      const x = margenX + col * colAncho;
+      const y = margenY + fil * filaAlto;
+      const archivoLocal = archivoPorMotorista.get(f.motoristaId);
+
+      doc.rect(x + 6, y, colAncho - 12, imagenAlto).stroke('#CCCCCC');
+
+      if (archivoLocal) {
+        try {
+          doc.image(path.join(UPLOADS_BOLETAS_DIR, archivoLocal), x + 6, y, {
+            fit: [colAncho - 12, imagenAlto],
+            align: 'center',
+            valign: 'center'
+          });
+        } catch {
+          // PDFKit no puede incrustar todos los formatos (ej. WEBP) —
+          // se avisa en vez de tumbar la generación de todo el PDF.
+          doc.font('Helvetica').fontSize(9).fillColor('#666')
+            .text('No se pudo previsualizar esta imagen.', x + 16, y + imagenAlto / 2 - 10, { width: colAncho - 32, align: 'center' });
+          doc.fillColor('#000');
+        }
+      } else {
+        doc.font('Helvetica-Bold').fontSize(10).fillColor('#999')
+          .text('Sin boleta cargada', x + 16, y + imagenAlto / 2 - 6, { width: colAncho - 32, align: 'center' });
+        doc.fillColor('#000');
+      }
+
+      const yEtiqueta = y + imagenAlto + 6;
+      doc.font('Helvetica-Bold').fontSize(9.5).text(`${f.codigo} — ${f.nombre}`, x + 6, yEtiqueta, { width: colAncho - 12 });
+      doc.font('Helvetica').fontSize(9)
+        .text(`Fecha: ${formatearFecha(f.fecha)}   Repartos: ${f.cantidadRepartos ?? 0}`, x + 6, yEtiqueta + 14, { width: colAncho - 12 });
     });
   }
 

@@ -1,12 +1,14 @@
 import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import multer from 'multer';
 import { pool } from '../config/db.js';
 import { authenticate, requireRole, tieneAccesoSucursal, esAdministrador } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { obtenerMotoristasBoleta } from './informes.routes.js';
-import { subirBoletaADrive, renombrarBoletaEnDrive } from '../utils/googleDrive.js';
+import { guardarBoletaMotorista } from '../services/boleta.service.js';
+import { UPLOADS_BOLETAS_DIR, uploadBoleta } from '../config/uploadsBoleta.js';
+
+export { UPLOADS_BOLETAS_DIR };
 
 const router = Router();
 router.use(authenticate);
@@ -18,28 +20,6 @@ function esMotoristaPuro(req) {
   const roles = req.user?.roles ?? [];
   return roles.length > 0 && roles.every((r) => r === 'Motorista');
 }
-
-export const UPLOADS_BOLETAS_DIR = path.resolve(process.cwd(), 'uploads', 'boletas');
-fs.mkdirSync(UPLOADS_BOLETAS_DIR, { recursive: true });
-
-const EXTENSIONES_BOLETA = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' };
-
-const uploadBoleta = multer({
-  storage: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, UPLOADS_BOLETAS_DIR),
-    filename: (req, file, cb) => {
-      const ext = EXTENSIONES_BOLETA[file.mimetype] || path.extname(file.originalname) || '.jpg';
-      cb(null, `${req.params.motoristaId}-${req.query.fecha}-${Date.now()}${ext}`);
-    }
-  }),
-  limits: { fileSize: 8 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (!EXTENSIONES_BOLETA[file.mimetype]) {
-      return cb(new Error('Formato de imagen no soportado. Usa JPG, PNG o WEBP.'));
-    }
-    cb(null, true);
-  }
-});
 
 // GET /api/boleta-imagen?fecha=&sucursalId=
 // Mismo listado de motoristas que "Boletas cierre" (asistencia + cierre
@@ -121,82 +101,11 @@ router.post(
       }
     }
 
-    const [[persona]] = await pool.query(
-      `SELECT CONCAT(p.nombres,' ',p.apellidos) AS nombre
-       FROM motorista m JOIN persona p ON p.persona_id = m.persona_id
-       WHERE m.persona_id = ?`,
-      [motoristaId]
-    );
-    const [[sucursal]] = await pool.query('SELECT nombre FROM sucursal WHERE sucursal_id = ?', [Number(sucursalId)]);
-
-    const [[existente]] = await pool.query(
-      'SELECT * FROM boleta_motorista WHERE motorista_id = ? AND fecha = ?',
-      [motoristaId, fecha]
-    );
-
-    if (existente) {
-      const marca = `reemplazada ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
-
-      // Local: se renombra, no se borra — queda en el disco como copia.
-      const extAnterior = path.extname(existente.archivo_local);
-      const nombreLocalNuevo = `${existente.archivo_local.slice(0, -extAnterior.length)}-${marca.replace(/[: ]/g, '-')}${extAnterior}`;
-      fs.rename(
-        path.join(UPLOADS_BOLETAS_DIR, existente.archivo_local),
-        path.join(UPLOADS_BOLETAS_DIR, nombreLocalNuevo),
-        () => {}
-      );
-
-      // Drive: mismo criterio, se renombra el archivo anterior en vez
-      // de sobrescribirlo.
-      if (existente.drive_file_id) {
-        const nombreDriveAnterior = `${persona?.nombre || 'Motorista'} - ${fecha} (${marca})${extAnterior}`;
-        await renombrarBoletaEnDrive(existente.drive_file_id, nombreDriveAnterior);
-      }
-    }
-
-    const ext = path.extname(req.file.filename);
-    const nombreDrive = `${persona?.nombre || 'Motorista'} - ${fecha}${ext}`;
-
-    const resultadoDrive = await subirBoletaADrive({
-      rutaLocal: req.file.path,
-      nombreArchivo: nombreDrive,
-      mimeType: req.file.mimetype,
-      fecha,
-      cad: sucursal?.nombre || 'CAD'
+    const { subidaDrive } = await guardarBoletaMotorista({
+      motoristaId, sucursalId, fecha, archivo: req.file, usuarioId: req.user.usuarioId
     });
 
-    if (existente) {
-      // Ojo: si la subida a Drive falló, NO se debe caer de vuelta al
-      // drive_file_id anterior — ese archivo ya quedó renombrado como
-      // "reemplazada" y seguir apuntándolo confundiría al abrir "Ver
-      // boleta" (mostraría la vieja con nombre de reemplazada). Queda
-      // en null hasta que se vuelva a intentar subir.
-      await pool.query(
-        `UPDATE boleta_motorista
-         SET archivo_local = ?, drive_file_id = ?, drive_web_link = ?, usuario_id = ?, sucursal_id = ?, actualizado_en = NOW()
-         WHERE boleta_id = ?`,
-        [
-          req.file.filename,
-          resultadoDrive?.driveFileId ?? null,
-          resultadoDrive?.driveWebLink ?? null,
-          req.user.usuarioId,
-          Number(sucursalId),
-          existente.boleta_id
-        ]
-      );
-    } else {
-      await pool.query(
-        `INSERT INTO boleta_motorista
-           (motorista_id, sucursal_id, fecha, archivo_local, drive_file_id, drive_web_link, usuario_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          motoristaId, Number(sucursalId), fecha, req.file.filename,
-          resultadoDrive?.driveFileId ?? null, resultadoDrive?.driveWebLink ?? null, req.user.usuarioId
-        ]
-      );
-    }
-
-    res.json({ ok: true, subidaDrive: !!resultadoDrive });
+    res.json({ ok: true, subidaDrive });
   })
 );
 
