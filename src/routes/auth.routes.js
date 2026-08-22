@@ -29,12 +29,23 @@ async function cargarRolesYSucursales(usuarioId) {
     sucursales = propias;
   }
 
-  return { roles: roles.map((r) => r.nombre), sucursales };
+  // Si la persona detrás de este usuario también es motorista (mismo
+  // persona_id en la tabla motorista), guardamos su motoristaId para que
+  // el rol Motorista pueda subir/ver únicamente su propia boleta sin
+  // depender de que el frontend le mande el id correcto.
+  const [[motorista]] = await pool.query(
+    `SELECT m.persona_id AS motoristaId
+     FROM usuario u JOIN motorista m ON m.persona_id = u.persona_id
+     WHERE u.usuario_id = ?`,
+    [usuarioId]
+  );
+
+  return { roles: roles.map((r) => r.nombre), sucursales, motoristaId: motorista?.motoristaId ?? null };
 }
 
-function firmarToken({ usuarioId, usuario, nombre, roles, sucursales }) {
+function firmarToken({ usuarioId, usuario, nombre, roles, sucursales, motoristaId }) {
   return jwt.sign(
-    { usuarioId, usuario, nombre, roles, sucursalIds: sucursales.map((s) => s.id) },
+    { usuarioId, usuario, nombre, roles, sucursalIds: sucursales.map((s) => s.id), motoristaId },
     env.jwt.secret,
     { expiresIn: env.jwt.expiresIn }
   );
@@ -79,14 +90,14 @@ router.post('/login', asyncHandler(async (req, res) => {
     return res.status(401).json({ error: 'Usuario o contraseña incorrectos.' });
   }
 
-  const { roles, sucursales } = await cargarRolesYSucursales(cuenta.usuario_id);
-  const token = firmarToken({ usuarioId: cuenta.usuario_id, usuario: cuenta.usuario, nombre: cuenta.nombre, roles, sucursales });
+  const { roles, sucursales, motoristaId } = await cargarRolesYSucursales(cuenta.usuario_id);
+  const token = firmarToken({ usuarioId: cuenta.usuario_id, usuario: cuenta.usuario, nombre: cuenta.nombre, roles, sucursales, motoristaId });
 
   await pool.query(`UPDATE usuario SET ultimo_acceso = NOW() WHERE usuario_id = ?`, [cuenta.usuario_id]);
 
   res.json({
     token,
-    usuario: { nombre: cuenta.nombre, roles, rolActivo: roles[0] || null, sucursales }
+    usuario: { nombre: cuenta.nombre, roles, rolActivo: roles[0] || null, sucursales, motoristaId }
   });
 }));
 
@@ -121,8 +132,8 @@ router.post('/restablecer', asyncHandler(async (req, res) => {
 
 // GET /api/auth/me
 router.get('/me', authenticate, asyncHandler(async (req, res) => {
-  const { roles, sucursales } = await cargarRolesYSucursales(req.user.usuarioId);
-  res.json({ nombre: req.user.nombre, roles, rolActivo: roles[0] || null, sucursales });
+  const { roles, sucursales, motoristaId } = await cargarRolesYSucursales(req.user.usuarioId);
+  res.json({ nombre: req.user.nombre, roles, rolActivo: roles[0] || null, sucursales, motoristaId });
 }));
 
 export default router;

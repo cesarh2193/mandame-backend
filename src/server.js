@@ -1,6 +1,18 @@
 import { app } from './app.js';
 import { env } from './config/env.js';
 import { pool } from './config/db.js';
+import { logger } from './utils/logger.js';
+
+// Estos dos son la red de seguridad final: cualquier error que se escape
+// de un handler async sin pasar por errorHandler.js (ej. un throw dentro
+// de un callback, o una promesa sin .catch) igual queda guardado en
+// /logs en vez de perderse solo en la terminal.
+process.on('uncaughtException', (err) => {
+  logger.error('uncaughtException: ' + err.message, { stack: err.stack });
+});
+process.on('unhandledRejection', (reason) => {
+  logger.error('unhandledRejection: ' + (reason?.message || String(reason)), { stack: reason?.stack });
+});
 
 async function start() {
   try {

@@ -17,6 +17,7 @@ import personalRoutes from './routes/personal.routes.js';
 import usuariosRoutes from './routes/usuarios.routes.js';
 import informesRoutes from './routes/informes.routes.js';
 import boletaImagenRoutes from './routes/boletaImagen.routes.js';
+import logsRoutes from './routes/logs.routes.js';
 
 export const app = express();
 
@@ -40,6 +41,7 @@ app.use('/api/personal', personalRoutes);
 app.use('/api/usuarios', usuariosRoutes);
 app.use('/api/informes', informesRoutes);
 app.use('/api/boleta-imagen', boletaImagenRoutes);
+app.use('/api/logs', logsRoutes);
 
 app.use((req, res) => res.status(404).json({ error: 'Ruta no encontrada.' }));
 app.use(errorHandler);

@@ -5,6 +5,7 @@ import multer from 'multer';
 import { pool } from '../config/db.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
+import { TIPOS_DOCUMENTO_PERSONAL } from '../config/documentosPersonal.js';
 
 const router = Router();
 router.use(authenticate);
@@ -16,7 +17,7 @@ fs.mkdirSync(DOCUMENTOS_DIR, { recursive: true });
 
 const EXTENSIONES_FOTO = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' };
 const EXTENSIONES_DOCUMENTO = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'application/pdf': '.pdf' };
-const TIPOS_DOCUMENTO = ['DPI', 'RECIBO_LUZ', 'LICENCIA'];
+const TIPOS_DOCUMENTO = TIPOS_DOCUMENTO_PERSONAL.map((d) => d.tipo);
 
 const uploadFoto = multer({
   storage: multer.diskStorage({
@@ -64,8 +65,9 @@ function validarTipoDocumento(req, res, next) {
 // GET /api/personal?sinUsuario=true
 // sinUsuario=true es exclusivo del selector "crear usuario": además de
 // no tener cuenta todavía, solo tiene sentido ofrecer ahí personal con
-// puesto Administrador, Gerente o Supervisor (son los puestos que hoy
-// necesitan iniciar sesión en el sistema).
+// puesto Administrador, Gerente, Supervisor o Motorista (son los puestos
+// que hoy necesitan iniciar sesión en el sistema — el Motorista solo para
+// subir su boleta).
 //
 // Alcance por rol: Admin y Gerente ven todo el personal. Supervisor,
 // Digitador y Motorista solo ven el personal de las sucursales (CAD)
@@ -78,7 +80,7 @@ router.get('/', asyncHandler(async (req, res) => {
   const condiciones = [];
   const params = [];
   if (soloSinUsuario) {
-    condiciones.push(`u.usuario_id IS NULL AND cp.nombre IN ('Administrador', 'Gerente', 'Supervisor')`);
+    condiciones.push(`u.usuario_id IS NULL AND cp.nombre IN ('Administrador', 'Gerente', 'Supervisor', 'Motorista')`);
   }
   if (!veTodo) {
     const sucursalIds = req.user.sucursalIds || [];
@@ -105,10 +107,7 @@ router.get('/', asyncHandler(async (req, res) => {
             p.telefono, p.correo,
             p.fecha_inicio_labores AS fechaInicioLabores, p.fecha_fin_labores AS fechaFinLabores,
             p.seguro_vida AS seguroVida,
-            p.foto_url IS NOT NULL AS tieneFoto,
-            EXISTS(SELECT 1 FROM persona_documento pd WHERE pd.persona_id = p.persona_id AND pd.tipo = 'DPI') AS tieneDocDpi,
-            EXISTS(SELECT 1 FROM persona_documento pd WHERE pd.persona_id = p.persona_id AND pd.tipo = 'RECIBO_LUZ') AS tieneDocReciboLuz,
-            EXISTS(SELECT 1 FROM persona_documento pd WHERE pd.persona_id = p.persona_id AND pd.tipo = 'LICENCIA') AS tieneDocLicencia
+            p.foto_url IS NOT NULL AS tieneFoto
      FROM persona p
      JOIN catalogo_puesto cp ON cp.puesto_id = p.puesto_id
      LEFT JOIN sucursal s ON s.sucursal_id = p.sucursal_base_id
@@ -118,7 +117,20 @@ router.get('/', asyncHandler(async (req, res) => {
      ORDER BY p.nombres`,
     params
   );
-  res.json(rows);
+
+  const documentosPorPersona = new Map();
+  if (rows.length) {
+    const [docs] = await pool.query(
+      `SELECT persona_id AS personaId, tipo FROM persona_documento WHERE persona_id IN (?)`,
+      [rows.map((p) => p.id)]
+    );
+    for (const d of docs) {
+      if (!documentosPorPersona.has(d.personaId)) documentosPorPersona.set(d.personaId, []);
+      documentosPorPersona.get(d.personaId).push(d.tipo);
+    }
+  }
+
+  res.json(rows.map((p) => ({ ...p, documentosSubidos: documentosPorPersona.get(p.id) || [] })));
 }));
 
 // POST /api/personal

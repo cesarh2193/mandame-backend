@@ -7,6 +7,7 @@ import { pool } from '../config/db.js';
 import { authenticate, esAdministrador, tieneAccesoSucursal } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { UPLOADS_DIR } from './personal.routes.js';
+import { TIPOS_DOCUMENTO_PERSONAL } from '../config/documentosPersonal.js';
 
 const LOGO_MANDAME_PATH = path.resolve(process.cwd(), '../mandame-frontend/src/assets/logo-mandame.png');
 
@@ -328,7 +329,7 @@ function dibujarBoletaNueva(doc, fila, posicion) {
   const horasTrabajadas = fila.minutosTrabajados != null ? (fila.minutosTrabajados / 60).toFixed(1) : '';
 
   campo('NOMBRE:', fila.nombre);
-  campo('CÓDIGO:', fila.placa);
+  campo('CÓDIGO:', fila.codigo);
   campo('CAD:', fila.sucursal);
   campo('CANTIDAD DE REPARTO:', fila.cantidadRepartos);
   campo('HORAS TRABAJADAS:', horasTrabajadas);
@@ -860,11 +861,10 @@ function dibujarFichaPersonalPDF(doc, persona, rutaFoto) {
   }
 
   seccion('Documentos adjuntos');
-  filaEstados([
-    ['DPI', !!persona.tieneDocDpi],
-    ['Recibo de luz', !!persona.tieneDocReciboLuz],
-    ['Licencia', !!persona.tieneDocLicencia]
-  ]);
+  const paresDocumentos = TIPOS_DOCUMENTO_PERSONAL.map((d) => [d.etiqueta, persona.documentosSubidos.includes(d.tipo)]);
+  for (let i = 0; i < paresDocumentos.length; i += 3) {
+    filaEstados(paresDocumentos.slice(i, i + 3));
+  }
 }
 
 // GET /api/informes/ficha-personal?personaId=
@@ -892,10 +892,7 @@ router.get('/ficha-personal', asyncHandler(async (req, res) => {
             p.nombre_padre AS nombrePadre, p.nombre_madre AS nombreMadre,
             p.fecha_inicio_labores AS fechaInicioLabores, p.fecha_fin_labores AS fechaFinLabores,
             p.seguro_vida AS seguroVida, p.foto_url AS fotoUrl,
-            m.persona_id IS NOT NULL AS tambienMotorista, m.tipo_motorista AS tipoMotorista, m.placa, m.licencia,
-            EXISTS(SELECT 1 FROM persona_documento pd WHERE pd.persona_id = p.persona_id AND pd.tipo = 'DPI') AS tieneDocDpi,
-            EXISTS(SELECT 1 FROM persona_documento pd WHERE pd.persona_id = p.persona_id AND pd.tipo = 'RECIBO_LUZ') AS tieneDocReciboLuz,
-            EXISTS(SELECT 1 FROM persona_documento pd WHERE pd.persona_id = p.persona_id AND pd.tipo = 'LICENCIA') AS tieneDocLicencia
+            m.persona_id IS NOT NULL AS tambienMotorista, m.tipo_motorista AS tipoMotorista, m.placa, m.licencia
      FROM persona p
      JOIN catalogo_puesto cp ON cp.puesto_id = p.puesto_id
      LEFT JOIN sucursal s ON s.sucursal_id = p.sucursal_base_id
@@ -907,6 +904,9 @@ router.get('/ficha-personal', asyncHandler(async (req, res) => {
   if (!persona) {
     return res.status(404).json({ error: 'Personal no encontrado.' });
   }
+
+  const [documentos] = await pool.query('SELECT tipo FROM persona_documento WHERE persona_id = ?', [personaId]);
+  persona.documentosSubidos = documentos.map((d) => d.tipo);
   if (persona.sucursalId && !tieneAccesoSucursal(req, persona.sucursalId)) {
     return res.status(403).json({ error: 'No tienes acceso a esta sucursal.' });
   }

@@ -11,6 +11,14 @@ import { subirBoletaADrive, renombrarBoletaEnDrive } from '../utils/googleDrive.
 const router = Router();
 router.use(authenticate);
 
+// true si el usuario solo tiene el rol Motorista (ningún rol elevado
+// combinado) — a ese perfil se le restringe todo a "lo suyo": solo ve y
+// solo puede subir/reemplazar su propia boleta.
+function esMotoristaPuro(req) {
+  const roles = req.user?.roles ?? [];
+  return roles.length > 0 && roles.every((r) => r === 'Motorista');
+}
+
 export const UPLOADS_BOLETAS_DIR = path.resolve(process.cwd(), 'uploads', 'boletas');
 fs.mkdirSync(UPLOADS_BOLETAS_DIR, { recursive: true });
 
@@ -53,10 +61,16 @@ router.get('/', asyncHandler(async (req, res) => {
   );
   const cargadas = new Set(boletas.map((b) => b.motoristaId));
 
-  res.json(motoristas.map((m) => ({
+  let resultado = motoristas.map((m) => ({
     ...m,
     estado: cargadas.has(m.motoristaId) ? 'CARGADA' : 'PENDIENTE'
-  })));
+  }));
+
+  if (esMotoristaPuro(req)) {
+    resultado = resultado.filter((m) => Number(m.motoristaId) === Number(req.user.motoristaId));
+  }
+
+  res.json(resultado);
 }));
 
 // POST /api/boleta-imagen/:motoristaId?fecha=&sucursalId=  (form-data: imagen)
@@ -76,7 +90,7 @@ router.get('/', asyncHandler(async (req, res) => {
 // directo.
 router.post(
   '/:motoristaId',
-  requireRole('Supervisor', 'Digitador', 'Gerente'),
+  requireRole('Supervisor', 'Digitador', 'Gerente', 'Motorista'),
   uploadBoleta.single('imagen'),
   asyncHandler(async (req, res) => {
     const motoristaId = Number(req.params.motoristaId);
@@ -90,6 +104,11 @@ router.post(
     }
     if (!req.file) {
       return res.status(400).json({ error: 'Debes adjuntar una imagen.' });
+    }
+
+    if (esMotoristaPuro(req) && motoristaId !== Number(req.user.motoristaId)) {
+      fs.unlink(req.file.path, () => {});
+      return res.status(403).json({ error: 'Solo puedes subir tu propia boleta.' });
     }
 
     if (!esAdministrador(req)) {
@@ -188,6 +207,9 @@ router.get('/:motoristaId/archivo', asyncHandler(async (req, res) => {
   const { fecha } = req.query;
   if (!fecha) {
     return res.status(400).json({ error: 'La fecha es requerida.' });
+  }
+  if (esMotoristaPuro(req) && Number(req.params.motoristaId) !== Number(req.user.motoristaId)) {
+    return res.status(403).json({ error: 'Solo puedes ver tu propia boleta.' });
   }
 
   const [[boleta]] = await pool.query(
