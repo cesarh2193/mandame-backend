@@ -78,6 +78,50 @@ export async function obtenerFilasBoleta(req, fecha, sucursalId, motoristaIds) {
   return rows;
 }
 
+// Igual que obtenerFilasBoleta, pero por rango de fechas (fechaInicio a
+// fechaFin, inclusive) en vez de un solo día — la usa "Asistencia
+// general" para poder consultar varios días de una vez. Se mantiene
+// aparte de obtenerFilasBoleta (que sí sigue usando un único día) para
+// no cambiarle el contrato a quien ya la usa (Boleta.jsx, revisión de
+// boletas).
+export async function obtenerFilasAsistenciaGeneral(req, fechaInicio, fechaFin, sucursalId) {
+  const condiciones = ['r.fecha BETWEEN ? AND ?', "r.estado = 'AUTORIZADO'"];
+  const params = [fechaInicio, fechaFin];
+
+  if (sucursalId) {
+    condiciones.push('a.sucursal_id = ?');
+    params.push(Number(sucursalId));
+  } else if (!esAdministrador(req)) {
+    condiciones.push('a.sucursal_id IN (?)');
+    params.push(req.user.sucursalIds?.length ? req.user.sucursalIds : [0]);
+  }
+
+  const [rows] = await pool.query(
+    `SELECT a.motorista_id AS motoristaId, p.codigo_interno AS codigo, CONCAT(p.nombres,' ',p.apellidos) AS nombre,
+            m.placa, s.nombre AS sucursal, r.fecha, r.cantidad_entregas AS cantidadRepartos,
+            r.observacion, t.descripcion AS tarifa,
+            TIME_FORMAT(ing.fecha_hora, '%H:%i') AS horaIngreso,
+            TIME_FORMAT(sal.fecha_hora, '%H:%i') AS horaSalida,
+            TIMESTAMPDIFF(MINUTE, ing.fecha_hora, sal.fecha_hora) AS minutosTrabajados
+     FROM reparto r
+     JOIN asignacion a ON a.asignacion_id = r.asignacion_id
+     JOIN motorista m ON m.persona_id = a.motorista_id
+     JOIN persona p ON p.persona_id = m.persona_id
+     JOIN sucursal s ON s.sucursal_id = a.sucursal_id
+     LEFT JOIN tarifa t ON t.tarifa_id = r.tarifa_id
+     LEFT JOIN asistencia_marca ing ON ing.asignacion_id = a.asignacion_id
+       AND ing.tipo_marca_id = (SELECT tipo_marca_id FROM catalogo_tipo_marca WHERE nombre = 'INGRESO')
+       AND DATE(ing.fecha_hora) = r.fecha
+     LEFT JOIN asistencia_marca sal ON sal.asignacion_id = a.asignacion_id
+       AND sal.tipo_marca_id = (SELECT tipo_marca_id FROM catalogo_tipo_marca WHERE nombre = 'SALIDA')
+       AND DATE(sal.fecha_hora) = r.fecha
+     WHERE ${condiciones.join(' AND ')}
+     ORDER BY r.fecha, s.nombre, p.nombres`,
+    params
+  );
+  return rows;
+}
+
 export async function obtenerMotoristasBoleta(req, fecha, sucursalId) {
   const condiciones = ['r.fecha = ?', "r.estado = 'AUTORIZADO'"];
   const params = [fecha];
@@ -700,6 +744,7 @@ router.get('/revision-boletas/pdf', requireRole('Gerente', 'Supervisor', 'Digita
     [fecha, Number(sucursalId)]
   );
   const archivoPorMotorista = new Map(boletas.map((b) => [b.motoristaId, b.archivoLocal]));
+  const [[sucursal]] = await pool.query('SELECT nombre FROM sucursal WHERE sucursal_id = ?', [Number(sucursalId)]);
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="revision-boletas-${fecha}.pdf"`);
@@ -707,16 +752,31 @@ router.get('/revision-boletas/pdf', requireRole('Gerente', 'Supervisor', 'Digita
   const doc = new PDFDocument({ margin: 40 });
   doc.pipe(res);
 
+  const margenX = 40;
+  const margenY = 40;
+  const anchoUtil = doc.page.width - margenX * 2;
+
+  // Encabezado (solo en la primera página, igual que el resto de
+  // informes en PDF): logo, título, CAD/fecha y fecha de generación.
+  try { doc.image(LOGO_MANDAME_PATH, margenX, margenY, { width: 90 }); } catch { /* logo no disponible en este entorno */ }
+  doc.font('Helvetica-Bold').fontSize(15).fillColor('#000').text('Revisión de boletas', margenX + 100, margenY + 4);
+  doc.font('Helvetica').fontSize(10).fillColor('#444')
+    .text(`CAD: ${sucursal?.nombre || sucursalId}    Fecha: ${formatearFecha(fecha)}`, margenX + 100, margenY + 24);
+  doc.font('Helvetica').fontSize(8.5).fillColor('#999')
+    .text(`Generado: ${new Date().toLocaleString('es-GT')}`, margenX + 100, margenY + 40);
+  doc.fillColor('#000');
+  doc.moveTo(margenX, margenY + 66).lineTo(margenX + anchoUtil, margenY + 66).strokeColor('#CCCCCC').stroke();
+  doc.strokeColor('#000');
+
+  const areaY = margenY + 78;
+
   if (filas.length === 0) {
     doc.font('Helvetica').fontSize(13).text(
       'No hay motoristas con cierre de turno registrado para esta fecha.',
-      40, 40, { width: doc.page.width - 80 }
+      margenX, areaY, { width: anchoUtil }
     );
   } else {
-    const margenX = 40;
-    const margenY = 40;
-    const anchoUtil = doc.page.width - margenX * 2;
-    const altoUtil = doc.page.height - margenY * 2;
+    const altoUtil = doc.page.height - areaY - margenY;
     const colAncho = anchoUtil / 2;
     const filaAlto = altoUtil / 2;
     const imagenAlto = filaAlto - 60;
@@ -728,7 +788,7 @@ router.get('/revision-boletas/pdf', requireRole('Gerente', 'Supervisor', 'Digita
       const col = posicion % 2;
       const fil = Math.floor(posicion / 2);
       const x = margenX + col * colAncho;
-      const y = margenY + fil * filaAlto;
+      const y = areaY + fil * filaAlto;
       const archivoLocal = archivoPorMotorista.get(f.motoristaId);
 
       doc.rect(x + 6, y, colAncho - 12, imagenAlto).stroke('#CCCCCC');
@@ -1039,29 +1099,35 @@ router.get('/ficha-personal', asyncHandler(async (req, res) => {
 }));
 
 // Dibuja la tabla de "Asistencia general": mismas columnas que se ven en
-// pantalla (Tienda, Codint, Nombre, Entrada, Salida, Repts, Tarifa), con
-// encabezado repetido si el listado no cabe en una sola página.
-function dibujarAsistenciaGeneralPDF(doc, filas, fecha) {
+// pantalla (CAD, Fecha, Codint, Nombre, Entrada, Salida, Repts, Tarifa),
+// con encabezado repetido si el listado no cabe en una sola página. Como
+// ahora el rango puede cubrir varios días, se agrega la columna Fecha
+// para distinguir cada fila.
+function dibujarAsistenciaGeneralPDF(doc, filas, fechaInicio, fechaFin) {
   const x = 40;
   const y0 = 40;
   const anchoUtil = doc.page.width - 80;
 
   const columnas = [
-    { titulo: 'CAD', ancho: 0.20 },
-    { titulo: 'COD', ancho: 0.09 },
-    { titulo: 'NOMBRE', ancho: 0.26 },
-    { titulo: 'ENTRADA', ancho: 0.13 },
-    { titulo: 'SALIDA', ancho: 0.13 },
-    { titulo: 'REPARTOS', ancho: 0.07 },
-    { titulo: 'TARIFA', ancho: 0.12 }
+    { titulo: 'CAD', ancho: 0.17 },
+    { titulo: 'FECHA', ancho: 0.10 },
+    { titulo: 'COD', ancho: 0.08 },
+    { titulo: 'NOMBRE', ancho: 0.22 },
+    { titulo: 'ENTRADA', ancho: 0.12 },
+    { titulo: 'SALIDA', ancho: 0.12 },
+    { titulo: 'REPARTOS', ancho: 0.08 },
+    { titulo: 'TARIFA', ancho: 0.11 }
   ].map((c) => ({ ...c, ancho: c.ancho * anchoUtil }));
 
   let y = y0;
 
   function encabezadoPagina() {
+    const textoFecha = fechaInicio === fechaFin
+      ? `Fecha: ${formatearFecha(fechaInicio)}`
+      : `Del ${formatearFecha(fechaInicio)} al ${formatearFecha(fechaFin)}`;
     doc.image(LOGO_MANDAME_PATH, x + anchoUtil - 110, y, { width: 110 });
     doc.font('Helvetica-Bold').fontSize(16).text('Asistencia general', x, y);
-    doc.font('Helvetica').fontSize(10).fillColor('#5B6270').text(`Fecha: ${formatearFecha(fecha)}`, x, y + 20);
+    doc.font('Helvetica').fontSize(10).fillColor('#5B6270').text(textoFecha, x, y + 20);
     doc.fillColor('#000');
     y += 50;
     encabezadoTabla();
@@ -1089,13 +1155,14 @@ function dibujarAsistenciaGeneralPDF(doc, filas, fecha) {
   encabezadoPagina();
 
   if (filas.length === 0) {
-    doc.font('Helvetica').fontSize(11).text('No hay motoristas con asistencia y cierre de turno para esta fecha.', x, y + 10);
+    doc.font('Helvetica').fontSize(11).text('No hay motoristas con asistencia y cierre de turno para este rango de fechas.', x, y + 10);
     return;
   }
 
   filas.forEach((fila) => {
     const valores = [
       fila.sucursal || '',
+      fila.fecha ? formatearFecha(fila.fecha) : '',
       fila.codigo != null ? String(fila.codigo) : '',
       fila.nombre || '',
       fila.horaIngreso || '—',
@@ -1130,62 +1197,76 @@ function dibujarAsistenciaGeneralPDF(doc, filas, fecha) {
     .text(`Total con asistencia y cierre de turno: ${filas.length}`, x, y);
 }
 
-// GET /api/informes/asistencia-general/preview?fecha=&sucursalId=
-// Sin sucursalId trae todas las CAD a las que el usuario tiene acceso
-// (igual que /boleta). Reusa la misma consulta que boleta: motoristas con
-// asistencia y cierre de turno (reparto autorizado) en esa fecha.
-router.get('/asistencia-general/preview', asyncHandler(async (req, res) => {
-  const { fecha, sucursalId } = req.query;
-  if (!fecha) {
-    return res.status(400).json({ error: 'La fecha es requerida.' });
+// Valida y devuelve { fechaInicio, fechaFin } a partir de los query
+// params, o null (con la respuesta ya enviada) si faltan o el rango es
+// inválido — compartido por los 3 endpoints de abajo.
+function leerRangoFechas(req, res) {
+  const { fechaInicio, fechaFin } = req.query;
+  if (!fechaInicio || !fechaFin) {
+    res.status(400).json({ error: 'La fecha de inicio y la fecha final son requeridas.' });
+    return null;
   }
+  if (fechaInicio > fechaFin) {
+    res.status(400).json({ error: 'La fecha de inicio no puede ser posterior a la fecha final.' });
+    return null;
+  }
+  return { fechaInicio, fechaFin };
+}
+
+// GET /api/informes/asistencia-general/preview?fechaInicio=&fechaFin=&sucursalId=
+// Sin sucursalId trae todas las CAD a las que el usuario tiene acceso
+// (igual que /boleta). Motoristas con asistencia y cierre de turno
+// (reparto autorizado) en ese rango de fechas.
+router.get('/asistencia-general/preview', asyncHandler(async (req, res) => {
+  const rango = leerRangoFechas(req, res);
+  if (!rango) return;
+  const { sucursalId } = req.query;
   if (sucursalId && !tieneAccesoSucursal(req, sucursalId)) {
     return res.status(403).json({ error: 'No tienes acceso a esta sucursal.' });
   }
 
-  const filas = await obtenerFilasBoleta(req, fecha, sucursalId);
+  const filas = await obtenerFilasAsistenciaGeneral(req, rango.fechaInicio, rango.fechaFin, sucursalId);
   res.json(filas);
 }));
 
-// GET /api/informes/asistencia-general?fecha=&sucursalId=
+// GET /api/informes/asistencia-general?fechaInicio=&fechaFin=&sucursalId=
 router.get('/asistencia-general', asyncHandler(async (req, res) => {
-  const { fecha, sucursalId } = req.query;
-  if (!fecha) {
-    return res.status(400).json({ error: 'La fecha es requerida.' });
-  }
+  const rango = leerRangoFechas(req, res);
+  if (!rango) return;
+  const { sucursalId } = req.query;
   if (sucursalId && !tieneAccesoSucursal(req, sucursalId)) {
     return res.status(403).json({ error: 'No tienes acceso a esta sucursal.' });
   }
 
-  const filas = await obtenerFilasBoleta(req, fecha, sucursalId);
+  const filas = await obtenerFilasAsistenciaGeneral(req, rango.fechaInicio, rango.fechaFin, sucursalId);
 
   res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `attachment; filename="asistencia-general-${fecha}.pdf"`);
+  res.setHeader('Content-Disposition', `attachment; filename="asistencia-general-${rango.fechaInicio}-a-${rango.fechaFin}.pdf"`);
 
   const doc = new PDFDocument({ margin: 0, size: 'LETTER', layout: 'landscape' });
   doc.pipe(res);
-  dibujarAsistenciaGeneralPDF(doc, filas, fecha);
+  dibujarAsistenciaGeneralPDF(doc, filas, rango.fechaInicio, rango.fechaFin);
   doc.end();
 }));
 
-// GET /api/informes/asistencia-general/excel?fecha=&sucursalId=
+// GET /api/informes/asistencia-general/excel?fechaInicio=&fechaFin=&sucursalId=
 // Mismo listado que /asistencia-general, en formato .xlsx.
 router.get('/asistencia-general/excel', asyncHandler(async (req, res) => {
-  const { fecha, sucursalId } = req.query;
-  if (!fecha) {
-    return res.status(400).json({ error: 'La fecha es requerida.' });
-  }
+  const rango = leerRangoFechas(req, res);
+  if (!rango) return;
+  const { sucursalId } = req.query;
   if (sucursalId && !tieneAccesoSucursal(req, sucursalId)) {
     return res.status(403).json({ error: 'No tienes acceso a esta sucursal.' });
   }
 
-  const filas = await obtenerFilasBoleta(req, fecha, sucursalId);
+  const filas = await obtenerFilasAsistenciaGeneral(req, rango.fechaInicio, rango.fechaFin, sucursalId);
 
   const libro = new ExcelJS.Workbook();
   const hoja = libro.addWorksheet('Asistencia general');
 
   hoja.columns = [
     { header: 'CAD', key: 'sucursal', width: 20 },
+    { header: 'Fecha', key: 'fecha', width: 12 },
     { header: 'Cod', key: 'codigo', width: 10 },
     { header: 'Nombre', key: 'nombre', width: 32 },
     { header: 'Entrada', key: 'horaIngreso', width: 12 },
@@ -1198,6 +1279,7 @@ router.get('/asistencia-general/excel', asyncHandler(async (req, res) => {
   filas.forEach((fila) => {
     hoja.addRow({
       sucursal: fila.sucursal || '',
+      fecha: fila.fecha ? formatearFecha(fila.fecha) : '',
       codigo: fila.codigo ?? '',
       nombre: fila.nombre || '',
       horaIngreso: fila.horaIngreso || '',
@@ -1208,7 +1290,7 @@ router.get('/asistencia-general/excel', asyncHandler(async (req, res) => {
   });
 
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="asistencia-general-${fecha}.xlsx"`);
+  res.setHeader('Content-Disposition', `attachment; filename="asistencia-general-${rango.fechaInicio}-a-${rango.fechaFin}.xlsx"`);
 
   await libro.xlsx.write(res);
   res.end();

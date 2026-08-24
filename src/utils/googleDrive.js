@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { google } from 'googleapis';
 import { env } from '../config/env.js';
+import { logger } from './logger.js';
 
 let driveClient = null;
 
@@ -50,7 +51,7 @@ async function buscarOCrearCarpeta(drive, nombre, carpetaPadreId) {
 export async function subirBoletaADrive({ rutaLocal, nombreArchivo, mimeType, fecha, cad }) {
   const drive = obtenerDrive();
   if (!drive) {
-    console.warn('[drive] Faltan variables de OAuth2 (GOOGLE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN) o GOOGLE_DRIVE_FOLDER_ID: se omite la subida a Drive.');
+    logger.warn('[drive] Faltan variables de OAuth2 (GOOGLE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN) o GOOGLE_DRIVE_FOLDER_ID: se omite la subida a Drive.', { nombreArchivo, fecha, cad });
     return null;
   }
 
@@ -65,7 +66,7 @@ export async function subirBoletaADrive({ rutaLocal, nombreArchivo, mimeType, fe
     });
     return { driveFileId: data.id, driveWebLink: data.webViewLink };
   } catch (err) {
-    console.error('[drive] No se pudo subir la boleta a Google Drive:', err.message);
+    logger.error('[drive] No se pudo subir la boleta a Google Drive: ' + err.message, { nombreArchivo, fecha, cad, stack: err.stack });
     return null;
   }
 }
@@ -83,7 +84,7 @@ export async function renombrarBoletaEnDrive(driveFileId, nuevoNombre) {
     await drive.files.update({ fileId: driveFileId, requestBody: { name: nuevoNombre } });
     return true;
   } catch (err) {
-    console.error('[drive] No se pudo renombrar la boleta anterior en Drive:', err.message);
+    logger.error('[drive] No se pudo renombrar la boleta anterior en Drive: ' + err.message, { driveFileId, nuevoNombre, stack: err.stack });
     return false;
   }
 }
