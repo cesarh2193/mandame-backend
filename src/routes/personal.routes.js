@@ -97,7 +97,7 @@ router.get('/', asyncHandler(async (req, res) => {
             cp.nombre AS puesto,
             s.sucursal_id AS sucursalId, s.codigo_cad AS codigoCad, s.nombre AS sucursalNombre, s.empresa_id AS empresaId,
             m.persona_id IS NOT NULL AS tambienMotorista,
-            m.tipo_motorista AS tipoMotorista, m.placa, m.licencia,
+            m.tipo_motorista AS tipoMotorista, m.placa, m.licencia, m.estado AS estadoMotorista,
             p.contacto_emergencia_nombre AS contactoEmergenciaNombre,
             p.contacto_emergencia_telefono AS contactoEmergenciaTelefono,
             p.contacto_emergencia_relacion AS contactoEmergenciaRelacion,
@@ -196,7 +196,7 @@ router.post('/', requireRole('Admin', 'Supervisor'), asyncHandler(async (req, re
 router.put('/:id', requireRole('Admin', 'Supervisor'), asyncHandler(async (req, res) => {
   const {
     nombres, apellidos, dpi, puesto, sucursalId, estado,
-    tambienMotorista, tipoMotorista, placa, licencia,
+    tambienMotorista, tipoMotorista, placa, licencia, motoristaHabilitado,
     contactoEmergenciaNombre, contactoEmergenciaTelefono, contactoEmergenciaRelacion,
     numeroCuenta, banco, tipoCuenta, igss, estadoCivil, nombreConyuge,
     nombrePadre, nombreMadre, telefono, correo,
@@ -248,11 +248,16 @@ router.put('/:id', requireRole('Admin', 'Supervisor'), asyncHandler(async (req, 
     );
 
     if (tambienMotorista === true) {
+      // motoristaHabilitado controla motorista.estado (A/I) — un campo
+      // aparte de persona.estado que decide si aparece como candidato en
+      // Asignaciones. Antes no se podía ver ni tocar desde acá, así que
+      // algunos quedaban inactivos ahí sin que nadie lo notara.
+      const estadoMotorista = motoristaHabilitado === false ? 'I' : 'A';
       await conn.query(
-        `INSERT INTO motorista (persona_id, licencia, placa, tipo_motorista)
-         VALUES (?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE licencia = VALUES(licencia), placa = VALUES(placa), tipo_motorista = VALUES(tipo_motorista)`,
-        [personaId, licencia || null, placa || null, tipoMotorista || 'FIJO']
+        `INSERT INTO motorista (persona_id, licencia, placa, tipo_motorista, estado)
+         VALUES (?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE licencia = VALUES(licencia), placa = VALUES(placa), tipo_motorista = VALUES(tipo_motorista), estado = VALUES(estado)`,
+        [personaId, licencia || null, placa || null, tipoMotorista || 'FIJO', estadoMotorista]
       );
     } else if (tambienMotorista === false) {
       await conn.query(`DELETE FROM motorista WHERE persona_id = ?`, [personaId]);
