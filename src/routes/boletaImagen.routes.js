@@ -7,6 +7,7 @@ import { asyncHandler } from '../middleware/errorHandler.js';
 import { obtenerMotoristasBoleta } from './informes.routes.js';
 import { guardarBoletaMotorista } from '../services/boleta.service.js';
 import { UPLOADS_BOLETAS_DIR, uploadBoleta } from '../config/uploadsBoleta.js';
+import { logger } from '../utils/logger.js';
 
 export { UPLOADS_BOLETAS_DIR };
 
@@ -129,7 +130,26 @@ router.get('/:motoristaId/archivo', asyncHandler(async (req, res) => {
     return res.status(404).json({ error: 'No hay boleta cargada para esa fecha.' });
   }
 
-  res.sendFile(path.join(UPLOADS_BOLETAS_DIR, boleta.archivo_local));
+  const rutaArchivo = path.join(UPLOADS_BOLETAS_DIR, boleta.archivo_local);
+  if (!fs.existsSync(rutaArchivo)) {
+    logger.error('Boleta con registro en base pero sin archivo en el servidor', {
+      motoristaId: req.params.motoristaId, fecha, archivoLocal: boleta.archivo_local
+    });
+    return res.status(404).json({ error: 'La boleta está registrada pero el archivo ya no está disponible en el servidor.' });
+  }
+
+  // Sin callback, un error de sendFile (permisos, archivo corrupto, etc.)
+  // puede cortar la conexión en seco en vez de responder con un error
+  // claro — el navegador solo ve "Network Error" y no sirve para
+  // diagnosticar. Con callback queda un mensaje real en el log.
+  res.sendFile(rutaArchivo, (err) => {
+    if (err && !res.headersSent) {
+      logger.error('No se pudo enviar el archivo de la boleta: ' + err.message, {
+        motoristaId: req.params.motoristaId, fecha, archivoLocal: boleta.archivo_local, stack: err.stack
+      });
+      res.status(500).json({ error: 'No se pudo leer el archivo de la boleta en el servidor.' });
+    }
+  });
 }));
 
 export default router;
