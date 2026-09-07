@@ -145,7 +145,7 @@ router.post('/', requireRole('Admin', 'Supervisor'), asyncHandler(async (req, re
   } = req.body;
 
   if (!nombres || !apellidos || !dpi || !puesto || !sucursalId) {
-    return res.status(400).json({ error: 'codigo, nombres, apellidos, dpi, puesto y sucursalId son requeridos.' });
+    return res.status(400).json({ error: 'nombres, apellidos, dpi, puesto y sucursalId son requeridos.' });
   }
   if (String(dpi).replace(/\D/g, '').length !== 13) {
     return res.status(400).json({ error: 'El DPI debe tener 13 dígitos.' });
@@ -166,7 +166,7 @@ router.post('/', requireRole('Admin', 'Supervisor'), asyncHandler(async (req, re
        VALUES (?, ?, ?, ?, (SELECT puesto_id FROM catalogo_puesto WHERE nombre = ?), ?, CURDATE(),
                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        codigo, nombres, apellidos, dpi, puesto, sucursalId,
+        codigo === '' || codigo === undefined ? null : codigo, nombres, apellidos, dpi, puesto, sucursalId,
         contactoEmergenciaNombre || null, contactoEmergenciaTelefono || null, contactoEmergenciaRelacion || null,
         numeroCuenta || null, banco || null, tipoCuenta || null, igss || null, estadoCivil || null, nombreConyuge || null,
         nombrePadre || null, nombreMadre || null, telefono || null, correo || null,
