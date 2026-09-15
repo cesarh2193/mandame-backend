@@ -66,13 +66,13 @@ router.post('/autorizar', requireRole('Supervisor', 'Gerente'), asyncHandler(asy
   res.json({ ok: true, autorizados, correosEnviados });
 }));
 
-// POST /api/autorizacion/:repartoId/revertir — Solo Administrador.
+// POST /api/autorizacion/:repartoId/revertir — Administrador o Supervisor.
 // Deshace un cierre de turno ya autorizado que se hizo por error:
 // borra la marca de SALIDA de ese día (el motorista vuelve a
 // aparecer "en turno" en Cierre de turno, listo para cerrarse bien)
 // y marca el reparto como ANULADO (no se borra, queda trazabilidad
 // en auditoria). También recalcula el resumen del CAD (cierre_dia).
-router.post('/:repartoId/revertir', requireRole(), asyncHandler(async (req, res) => {
+router.post('/:repartoId/revertir', requireRole('Supervisor'), asyncHandler(async (req, res) => {
   const repartoId = Number(req.params.repartoId);
   if (!repartoId) {
     return res.status(400).json({ error: 'Reparto inválido.' });
