@@ -156,6 +156,12 @@ router.post('/', requireRole('Admin', 'Supervisor'), asyncHandler(async (req, re
   if (String(dpi).replace(/\D/g, '').length !== 13) {
     return res.status(400).json({ error: 'El DPI debe tener 13 dígitos.' });
   }
+  if (tambienMotorista && licencia) {
+    const [[existente]] = await pool.query('SELECT persona_id FROM motorista WHERE licencia = ?', [licencia]);
+    if (existente) {
+      return res.status(409).json({ error: 'Ya existe un motorista registrado con esa licencia.' });
+    }
+  }
 
   const conn = await pool.getConnection();
   try {
@@ -224,6 +230,15 @@ router.put('/:id', requireRole('Admin', 'Supervisor'), asyncHandler(async (req, 
 
   if (dpi && String(dpi).replace(/\D/g, '').length !== 13) {
     return res.status(400).json({ error: 'El DPI debe tener 13 dígitos.' });
+  }
+  if (tambienMotorista === true && licencia) {
+    const [[existente]] = await pool.query(
+      'SELECT persona_id FROM motorista WHERE licencia = ? AND persona_id != ?',
+      [licencia, personaId]
+    );
+    if (existente) {
+      return res.status(409).json({ error: 'Ya existe un motorista registrado con esa licencia.' });
+    }
   }
 
   const conn = await pool.getConnection();
