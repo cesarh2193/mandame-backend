@@ -24,10 +24,18 @@ async function existePlanificacion(sucursalId, fecha) {
 // (y así el control de planificación no queda como paso opcional).
 router.get('/disponibles', requireAccesoSucursal((req) => req.query.sucursalId), asyncHandler(async (req, res) => {
   const { sucursalId, fecha } = req.query;
+  // Los de tipo TURNO normalmente solo se ofrecen sáb/dom (su horario
+  // habitual). ?esFeriado=true lo salta para un día entre semana que sea
+  // feriado, donde también tienen que entrar — lo decide quien asigna,
+  // no queda calculado solo, porque no llevamos un calendario de feriados.
+  const esFeriado = req.query.esFeriado === 'true';
 
   if (!(await existePlanificacion(sucursalId, fecha))) {
     return res.json({ sinPlanificacion: true, motoristas: [] });
   }
+
+  const condicionTurno = esFeriado ? '1=1' : '(m.tipo_motorista = \'FIJO\' OR DAYOFWEEK(?) IN (1,7))';
+  const paramsTurno = esFeriado ? [] : [fecha];
 
   const [rows] = await pool.query(
     `SELECT m.persona_id AS motoristaId, CONCAT(p.nombres,' ',p.apellidos) AS nombre,
@@ -44,9 +52,9 @@ router.get('/disponibles', requireAccesoSucursal((req) => req.query.sucursalId),
      FROM motorista m
      JOIN persona p ON p.persona_id = m.persona_id
      WHERE p.sucursal_base_id = ? AND m.estado = 'A' AND p.estado = 'A'
-       AND (m.tipo_motorista = 'FIJO' OR DAYOFWEEK(?) IN (1,7))
-     ORDER BY p.nombres`,
-    [fecha, fecha, sucursalId, fecha]
+       AND ${condicionTurno}
+     ORDER BY (m.tipo_motorista = 'FIJO') DESC, p.nombres`,
+    [fecha, fecha, sucursalId, ...paramsTurno]
   );
 
   res.json({ sinPlanificacion: false, motoristas: rows.map((r) => ({ ...r, disponible: !!r.disponible })) });
