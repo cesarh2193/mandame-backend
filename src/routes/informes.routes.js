@@ -246,6 +246,117 @@ function calcularSemanaISO(fechaStr) {
   return 1 + Math.round(diff / (7 * 24 * 60 * 60 * 1000));
 }
 
+// Inverso de calcularSemanaISO: dado un año + número de semana ISO
+// (lunes a domingo, la semana 1 es la que contiene el primer jueves del
+// año), devuelve { lunes, domingo } en formato 'YYYY-MM-DD'. Usado por
+// el Informe semanal para convertir "semana 38 de 2026" en un rango de
+// fechas real.
+function fechaAYMD(fecha) {
+  return fecha.toISOString().slice(0, 10);
+}
+function semanaISOaFechas(anio, semana) {
+  const enero4 = new Date(Date.UTC(anio, 0, 4));
+  const diaSemanaEnero4 = (enero4.getUTCDay() + 6) % 7; // 0=lunes..6=domingo
+  const lunesSemana1 = new Date(enero4);
+  lunesSemana1.setUTCDate(enero4.getUTCDate() - diaSemanaEnero4);
+  const lunes = new Date(lunesSemana1);
+  lunes.setUTCDate(lunesSemana1.getUTCDate() + (semana - 1) * 7);
+  const domingo = new Date(lunes);
+  domingo.setUTCDate(lunes.getUTCDate() + 6);
+  return { lunes: fechaAYMD(lunes), domingo: fechaAYMD(domingo) };
+}
+
+const DIAS_SEMANA = [
+  { key: 'lu', nombre: 'LU' }, { key: 'ma', nombre: 'MA' }, { key: 'mi', nombre: 'MI' },
+  { key: 'ju', nombre: 'JU' }, { key: 'vi', nombre: 'VI' }, { key: 'sa', nombre: 'SA' }, { key: 'do', nombre: 'DO' }
+];
+
+// Trae, para cada motorista con al menos un cierre de turno AUTORIZADO
+// en la semana [lunes, domingo], sus datos + qué días trabajó + horas +
+// el cálculo de pago (tarifa asignada cada día, capada a 8 horas/día —
+// confirmado con el negocio: si trabajó más de 8 horas ese día solo se
+// cuentan 8, si trabajó menos se cuenta lo real).
+async function obtenerFilasInformeSemanal(req, anio, semana, sucursalId) {
+  const { lunes, domingo } = semanaISOaFechas(anio, semana);
+
+  const condiciones = [`r.estado = 'AUTORIZADO'`, 'r.fecha BETWEEN ? AND ?'];
+  const params = [lunes, domingo];
+  if (sucursalId) {
+    condiciones.push('a.sucursal_id = ?');
+    params.push(Number(sucursalId));
+  } else if (!esAdministrador(req)) {
+    condiciones.push('a.sucursal_id IN (?)');
+    params.push(req.user.sucursalIds?.length ? req.user.sucursalIds : [0]);
+  }
+
+  const [filasDia] = await pool.query(
+    `SELECT a.motorista_id AS motoristaId, a.sucursal_id AS sucursalId,
+            s.codigo_cad AS codigoCad, s.nombre AS sucursal,
+            p.codigo_interno AS codigo, CONCAT(p.nombres,' ',p.apellidos) AS nombre,
+            m.licencia, m.tipo_motorista AS tipoMotorista,
+            r.fecha, t.valor AS tarifaValor,
+            TIMESTAMPDIFF(MINUTE, ing.fecha_hora, sal.fecha_hora) AS minutosTrabajados
+     FROM reparto r
+     JOIN asignacion a ON a.asignacion_id = r.asignacion_id
+     JOIN motorista m ON m.persona_id = a.motorista_id
+     JOIN persona p ON p.persona_id = m.persona_id
+     JOIN sucursal s ON s.sucursal_id = a.sucursal_id
+     LEFT JOIN tarifa t ON t.tarifa_id = r.tarifa_id
+     LEFT JOIN asistencia_marca ing ON ing.asignacion_id = a.asignacion_id
+       AND ing.tipo_marca_id = (SELECT tipo_marca_id FROM catalogo_tipo_marca WHERE nombre = 'INGRESO')
+       AND DATE(ing.fecha_hora) = r.fecha
+     LEFT JOIN asistencia_marca sal ON sal.asignacion_id = a.asignacion_id
+       AND sal.tipo_marca_id = (SELECT tipo_marca_id FROM catalogo_tipo_marca WHERE nombre = 'SALIDA')
+       AND DATE(sal.fecha_hora) = r.fecha
+     WHERE ${condiciones.join(' AND ')}
+     ORDER BY p.nombres, r.fecha`,
+    params
+  );
+
+  // Agrupa por motorista+CAD (un motorista de "apoyo" en otro CAD esa
+  // semana queda como una fila aparte, igual que en Boletas cierre).
+  const porMotorista = new Map();
+  for (const fila of filasDia) {
+    const clave = `${fila.motoristaId}-${fila.sucursalId}`;
+    if (!porMotorista.has(clave)) {
+      porMotorista.set(clave, {
+        motoristaId: fila.motoristaId, codigoCad: fila.codigoCad, sucursal: fila.sucursal,
+        codigo: fila.codigo, nombre: fila.nombre, licencia: fila.licencia, tipoMotorista: fila.tipoMotorista,
+        dias: { lu: false, ma: false, mi: false, ju: false, vi: false, sa: false, do: false },
+        totalDiasLaborados: 0, totalHorasTrabajadas: 0, totalDiasSinIva: 0, ultimaTarifa: null
+      });
+    }
+    const grupo = porMotorista.get(clave);
+
+    const fechaDia = new Date(`${fila.fecha}T00:00:00`);
+    const indiceDia = (fechaDia.getDay() + 6) % 7; // 0=lunes..6=domingo
+    grupo.dias[DIAS_SEMANA[indiceDia].key] = true;
+    grupo.totalDiasLaborados += 1;
+
+    const horasDia = fila.minutosTrabajados != null ? Math.min(fila.minutosTrabajados / 60, 8) : 0;
+    grupo.totalHorasTrabajadas += horasDia;
+
+    const tarifaValor = Number(fila.tarifaValor) || 0;
+    grupo.totalDiasSinIva += tarifaValor;
+    grupo.ultimaTarifa = tarifaValor; // se queda con la del día más reciente (van en orden por fecha)
+  }
+
+  return [...porMotorista.values()].map((g) => {
+    const totalGeneralSinIva = g.totalDiasSinIva;
+    const totalGeneralIva = totalGeneralSinIva * 0.12;
+    return {
+      ...g,
+      tarifaSinIva: g.ultimaTarifa || 0,
+      totalGeneralSinIva,
+      totalGeneralIva,
+      totalGeneral: totalGeneralSinIva + totalGeneralIva,
+      tipoPlaza: g.tipoMotorista === 'TURNO' ? 'Turno FDS 8 horas' : 'Plaza fija',
+      semana,
+      rangoFecha: `${formatearFecha(lunes)} AL ${formatearFecha(domingo)}`
+    };
+  });
+}
+
 function dibujarReporteAsistenciaPDF(doc, datos, info, fechaInicio, fechaFin) {
   const ancho = doc.page.width - 80;
   const x = 40;
@@ -1291,6 +1402,102 @@ router.get('/asistencia-general/excel', asyncHandler(async (req, res) => {
 
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="asistencia-general-${rango.fechaInicio}-a-${rango.fechaFin}.xlsx"`);
+
+  await libro.xlsx.write(res);
+  res.end();
+}));
+
+// GET /api/informes/semanal/preview?anio=&semana=&sucursalId=
+// Vista previa en JSON del Informe semanal (pago por motorista).
+// sucursalId es opcional: si no se manda, trae todos los CAD a los que
+// tenga acceso el usuario (o todos si es Administrador).
+router.get('/semanal/preview', requireRole('Gerente', 'Supervisor'), asyncHandler(async (req, res) => {
+  const { anio, semana, sucursalId } = req.query;
+  if (!anio || !semana) {
+    return res.status(400).json({ error: 'Debes indicar año y número de semana.' });
+  }
+  if (sucursalId && !tieneAccesoSucursal(req, sucursalId)) {
+    return res.status(403).json({ error: 'No tienes acceso a esta sucursal.' });
+  }
+
+  const filas = await obtenerFilasInformeSemanal(req, Number(anio), Number(semana), sucursalId);
+  res.json(filas);
+}));
+
+// GET /api/informes/semanal/excel?anio=&semana=&sucursalId=
+router.get('/semanal/excel', requireRole('Gerente', 'Supervisor'), asyncHandler(async (req, res) => {
+  const { anio, semana, sucursalId } = req.query;
+  if (!anio || !semana) {
+    return res.status(400).json({ error: 'Debes indicar año y número de semana.' });
+  }
+  if (sucursalId && !tieneAccesoSucursal(req, sucursalId)) {
+    return res.status(403).json({ error: 'No tienes acceso a esta sucursal.' });
+  }
+
+  const filas = await obtenerFilasInformeSemanal(req, Number(anio), Number(semana), sucursalId);
+
+  const libro = new ExcelJS.Workbook();
+  const hoja = libro.addWorksheet('Informe semanal');
+
+  hoja.columns = [
+    { header: 'CAD', key: 'codigoCad', width: 10 },
+    { header: 'CODIGO', key: 'codigo', width: 10 },
+    { header: 'TIENDA', key: 'sucursal', width: 24 },
+    { header: 'NOMBRE', key: 'nombre', width: 30 },
+    { header: 'LICENCIA', key: 'licencia', width: 14 },
+    { header: 'LU', key: 'lu', width: 6 },
+    { header: 'MA', key: 'ma', width: 6 },
+    { header: 'MI', key: 'mi', width: 6 },
+    { header: 'JU', key: 'ju', width: 6 },
+    { header: 'VI', key: 'vi', width: 6 },
+    { header: 'SA', key: 'sa', width: 6 },
+    { header: 'DO', key: 'do', width: 6 },
+    { header: 'TOTAL DIAS LABORADOS FDS', key: 'totalDiasLaborados', width: 14 },
+    { header: 'TARIFA SIN IVA', key: 'tarifaSinIva', width: 14 },
+    { header: 'HORAS TRABAJADAS', key: 'horasTrabajadas', width: 14 },
+    { header: 'TOTAL HORAS TRABAJADAS', key: 'totalHorasTrabajadas', width: 16 },
+    { header: 'TOTAL DIAS SIN IVA', key: 'totalDiasSinIva', width: 16 },
+    { header: 'TOTAL GENERAL SIN IVA', key: 'totalGeneralSinIva', width: 16 },
+    { header: 'TOTAL GENERAL IVA (12%)', key: 'totalGeneralIva', width: 18 },
+    { header: 'TOTAL GENERAL', key: 'totalGeneral', width: 16 },
+    { header: 'TIPO DE PLAZA', key: 'tipoPlaza', width: 18 },
+    { header: 'COMENTARIOS', key: 'comentarios', width: 20 },
+    { header: 'SEMANA', key: 'semana', width: 10 },
+    { header: 'RANGO DE FECHA', key: 'rangoFecha', width: 26 }
+  ];
+  hoja.getRow(1).font = { bold: true };
+
+  filas.forEach((fila) => {
+    hoja.addRow({
+      codigoCad: fila.codigoCad || '',
+      codigo: fila.codigo ?? '',
+      sucursal: fila.sucursal || '',
+      nombre: fila.nombre || '',
+      licencia: fila.licencia || '',
+      lu: fila.dias.lu ? 1 : '',
+      ma: fila.dias.ma ? 1 : '',
+      mi: fila.dias.mi ? 1 : '',
+      ju: fila.dias.ju ? 1 : '',
+      vi: fila.dias.vi ? 1 : '',
+      sa: fila.dias.sa ? 1 : '',
+      do: fila.dias.do ? 1 : '',
+      totalDiasLaborados: fila.totalDiasLaborados,
+      tarifaSinIva: fila.tarifaSinIva,
+      horasTrabajadas: Math.round(fila.totalHorasTrabajadas * 100) / 100,
+      totalHorasTrabajadas: Math.round(fila.totalHorasTrabajadas * 100) / 100,
+      totalDiasSinIva: Math.round(fila.totalDiasSinIva * 100) / 100,
+      totalGeneralSinIva: Math.round(fila.totalGeneralSinIva * 100) / 100,
+      totalGeneralIva: Math.round(fila.totalGeneralIva * 100) / 100,
+      totalGeneral: Math.round(fila.totalGeneral * 100) / 100,
+      tipoPlaza: fila.tipoPlaza,
+      comentarios: '',
+      semana: fila.semana,
+      rangoFecha: fila.rangoFecha
+    });
+  });
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="informe-semanal-semana-${semana}-${anio}.xlsx"`);
 
   await libro.xlsx.write(res);
   res.end();
