@@ -77,10 +77,13 @@ router.get('/', asyncHandler(async (req, res) => {
   const soloSinUsuario = req.query.sinUsuario === 'true';
   const veTodo = req.user.roles.includes('Admin') || req.user.roles.includes('Gerente');
 
-  // Inactivo (I) y Eliminado (E) no deben aparecer en ningún lado del
-  // sistema de aquí en adelante — se filtran siempre, sin depender de
-  // ningún parámetro opcional que el frontend pudiera mandar o no.
-  const condiciones = [`p.estado = 'A'`];
+  // Eliminado (E) nunca se devuelve por este endpoint, pase lo que pase
+  // (son los que antes eran Inactivo y se limpiaron — no tienen ninguna
+  // pantalla que los muestre). Inactivo (I) sí se puede seguir
+  // consultando con ?estado=I — es lo que alimenta "Mostrar dados de
+  // baja", para poder verlos y reactivarlos. Cualquier otro valor (o
+  // ninguno) trae los Activos, como siempre.
+  const condiciones = [req.query.estado === 'I' ? `p.estado = 'I'` : `p.estado = 'A'`];
   const params = [];
   if (soloSinUsuario) {
     condiciones.push(`u.usuario_id IS NULL AND cp.nombre IN ('Administrador', 'Gerente', 'Supervisor', 'Motorista')`);
