@@ -77,7 +77,10 @@ router.get('/', asyncHandler(async (req, res) => {
   const soloSinUsuario = req.query.sinUsuario === 'true';
   const veTodo = req.user.roles.includes('Admin') || req.user.roles.includes('Gerente');
 
-  const condiciones = [];
+  // Inactivo (I) y Eliminado (E) no deben aparecer en ningún lado del
+  // sistema de aquí en adelante — se filtran siempre, sin depender de
+  // ningún parámetro opcional que el frontend pudiera mandar o no.
+  const condiciones = [`p.estado = 'A'`];
   const params = [];
   if (soloSinUsuario) {
     condiciones.push(`u.usuario_id IS NULL AND cp.nombre IN ('Administrador', 'Gerente', 'Supervisor', 'Motorista')`);
@@ -136,7 +139,7 @@ router.get('/', asyncHandler(async (req, res) => {
 // POST /api/personal
 router.post('/', requireRole('Admin', 'Supervisor'), asyncHandler(async (req, res) => {
   const {
-    codigo, nombres, apellidos, dpi, puesto, sucursalId,
+    nombres, apellidos, dpi, puesto, sucursalId,
     tambienMotorista, tipoMotorista, placa, licencia,
     contactoEmergenciaNombre, contactoEmergenciaTelefono, contactoEmergenciaRelacion,
     numeroCuenta, banco, tipoCuenta, igss, estadoCivil, nombreConyuge,
@@ -155,6 +158,18 @@ router.post('/', requireRole('Admin', 'Supervisor'), asyncHandler(async (req, re
   try {
     await conn.beginTransaction();
 
+    // El código ya no lo escribe quien crea el registro — es un
+    // correlativo automático que nunca se repite (ver
+    // scripts/migrar-codigo-y-estado-personal.js). El UPDATE de la
+    // siguiente línea, dentro de esta misma transacción, ya actúa como
+    // bloqueo natural: si dos personas se crean al mismo tiempo, la
+    // segunda espera a que la primera termine antes de tomar el
+    // siguiente número.
+    await conn.query(`UPDATE codigo_personal_contador SET ultimo_codigo = ultimo_codigo + 1 WHERE id = 1`);
+    const [[{ ultimo_codigo: nuevoCodigo }]] = await conn.query(
+      `SELECT ultimo_codigo FROM codigo_personal_contador WHERE id = 1`
+    );
+
     const [result] = await conn.query(
       `INSERT INTO persona (
          codigo_interno, nombres, apellidos, dpi, puesto_id, sucursal_base_id, fecha_ingreso,
@@ -166,7 +181,7 @@ router.post('/', requireRole('Admin', 'Supervisor'), asyncHandler(async (req, re
        VALUES (?, ?, ?, ?, (SELECT puesto_id FROM catalogo_puesto WHERE nombre = ?), ?, CURDATE(),
                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        codigo === '' || codigo === undefined ? null : codigo, nombres, apellidos, dpi, puesto, sucursalId,
+        nuevoCodigo, nombres, apellidos, dpi, puesto, sucursalId,
         contactoEmergenciaNombre || null, contactoEmergenciaTelefono || null, contactoEmergenciaRelacion || null,
         numeroCuenta || null, banco || null, tipoCuenta || null, igss || null, estadoCivil || null, nombreConyuge || null,
         nombrePadre || null, nombreMadre || null, telefono || null, correo || null,
