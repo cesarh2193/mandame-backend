@@ -26,7 +26,7 @@ async function obtenerFilasMonitoreo(fecha) {
        ON ing.asignacion_id = a.asignacion_id
       AND ing.tipo_marca_id = (SELECT tipo_marca_id FROM catalogo_tipo_marca WHERE nombre = 'INGRESO')
       AND DATE(ing.fecha_hora) = ?
-     WHERE s.estado = 'A'
+     WHERE s.estado = 'A' AND s.visible_operativa = 1
      GROUP BY s.sucursal_id, s.nombre, pl.motoristas_plan
      ORDER BY s.nombre`,
     [fecha, fecha, fecha]

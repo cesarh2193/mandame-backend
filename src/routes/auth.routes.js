@@ -17,13 +17,13 @@ async function cargarRolesYSucursales(usuarioId) {
 
   let sucursales = [];
   if (esAdmin) {
-    const [todas] = await pool.query(`SELECT sucursal_id AS id, nombre FROM sucursal WHERE estado = 'A'`);
+    const [todas] = await pool.query(`SELECT sucursal_id AS id, nombre FROM sucursal WHERE estado = 'A' AND visible_operativa = 1`);
     sucursales = todas;
   } else {
     const [propias] = await pool.query(
       `SELECT s.sucursal_id AS id, s.nombre
        FROM usuario_sucursal us JOIN sucursal s ON s.sucursal_id = us.sucursal_id
-       WHERE us.usuario_id = ?`,
+       WHERE us.usuario_id = ? AND s.visible_operativa = 1`,
       [usuarioId]
     );
     sucursales = propias;

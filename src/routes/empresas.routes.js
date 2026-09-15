@@ -52,7 +52,10 @@ sucursalesRouter.get('/', asyncHandler(async (req, res) => {
   const condiciones = [];
   const params = [];
   if (empresaId) { condiciones.push('s.empresa_id = ?'); params.push(empresaId); }
-  if (estado) { condiciones.push('s.estado = ?'); condiciones.push('e.estado = ?'); params.push(estado, estado); }
+  if (estado) {
+    condiciones.push('s.estado = ?'); condiciones.push('e.estado = ?'); params.push(estado, estado);
+    condiciones.push('s.visible_operativa = 1');
+  }
   const where = condiciones.length ? `WHERE ${condiciones.join(' AND ')}` : '';
 
   const [rows] = await pool.query(
