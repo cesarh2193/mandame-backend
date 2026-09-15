@@ -1407,11 +1407,14 @@ router.get('/asistencia-general/excel', asyncHandler(async (req, res) => {
   res.end();
 }));
 
-// GET /api/informes/semanal/preview?anio=&semana=&sucursalId=
-// Vista previa en JSON del Informe semanal (pago por motorista).
-// sucursalId es opcional: si no se manda, trae todos los CAD a los que
-// tenga acceso el usuario (o todos si es Administrador).
-router.get('/semanal/preview', requireRole('Gerente', 'Supervisor'), asyncHandler(async (req, res) => {
+const INFORME_SEMANAL_TAM_PAGINA = 15;
+
+// GET /api/informes/semanal/preview?anio=&semana=&sucursalId=&pagina=
+// Vista previa en JSON del Informe semanal (pago por motorista), paginada
+// de 15 en 15. sucursalId es opcional: si no se manda, trae todos los CAD
+// a los que tenga acceso el usuario. Solo Administrador: es información
+// de pago real de los motoristas.
+router.get('/semanal/preview', requireRole(), asyncHandler(async (req, res) => {
   const { anio, semana, sucursalId } = req.query;
   if (!anio || !semana) {
     return res.status(400).json({ error: 'Debes indicar año y número de semana.' });
@@ -1420,12 +1423,24 @@ router.get('/semanal/preview', requireRole('Gerente', 'Supervisor'), asyncHandle
     return res.status(403).json({ error: 'No tienes acceso a esta sucursal.' });
   }
 
-  const filas = await obtenerFilasInformeSemanal(req, Number(anio), Number(semana), sucursalId);
-  res.json(filas);
+  const todasLasFilas = await obtenerFilasInformeSemanal(req, Number(anio), Number(semana), sucursalId);
+  const totalPaginas = Math.max(1, Math.ceil(todasLasFilas.length / INFORME_SEMANAL_TAM_PAGINA));
+  const pagina = Math.min(Math.max(1, Number(req.query.pagina) || 1), totalPaginas);
+  const inicio = (pagina - 1) * INFORME_SEMANAL_TAM_PAGINA;
+
+  res.json({
+    filas: todasLasFilas.slice(inicio, inicio + INFORME_SEMANAL_TAM_PAGINA),
+    total: todasLasFilas.length,
+    pagina,
+    totalPaginas,
+    tamPagina: INFORME_SEMANAL_TAM_PAGINA
+  });
 }));
 
 // GET /api/informes/semanal/excel?anio=&semana=&sucursalId=
-router.get('/semanal/excel', requireRole('Gerente', 'Supervisor'), asyncHandler(async (req, res) => {
+// El Excel se exporta completo (sin paginar): la paginación es solo
+// para la vista previa en pantalla. Solo Administrador.
+router.get('/semanal/excel', requireRole(), asyncHandler(async (req, res) => {
   const { anio, semana, sucursalId } = req.query;
   if (!anio || !semana) {
     return res.status(400).json({ error: 'Debes indicar año y número de semana.' });
