@@ -232,7 +232,7 @@ router.post('/descanso',
         [asignacion_id, `${fecha} 08:00:00`, req.user.usuarioId]
       );
       const [repartoRow] = await callProcedure('sp_cerrar_turno', [
-        asignacion_id, 0, tarifaFijo.id, null, 0, 'Descanso (día de descanso, pago completo)',
+        asignacion_id, 0, tarifaFijo.id, null, 0, 'Día de Descanso',
         req.user.usuarioId, `${fecha} 16:00:00`
       ]);
       repartoIds.push(repartoRow.repartoId);
