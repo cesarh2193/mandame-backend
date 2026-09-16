@@ -8,6 +8,7 @@ import { asyncHandler } from '../middleware/errorHandler.js';
 import { obtenerMotoristasBoleta } from './informes.routes.js';
 import { guardarBoletaMotorista } from '../services/boleta.service.js';
 import { uploadBoleta } from '../config/uploadsBoleta.js';
+import { convertirHeicSiCorresponde } from '../utils/imagenHeic.js';
 
 const router = Router();
 
@@ -70,6 +71,7 @@ router.post(
   '/publico/:motoristaId',
   verificarTokenBoleta,
   uploadBoleta.single('imagen'),
+  convertirHeicSiCorresponde(),
   asyncHandler(async (req, res) => {
     const motoristaId = Number(req.params.motoristaId);
     const { sucursalId, fecha } = req.boletaToken;

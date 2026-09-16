@@ -7,6 +7,7 @@ import { asyncHandler } from '../middleware/errorHandler.js';
 import { obtenerMotoristasBoleta } from './informes.routes.js';
 import { guardarBoletaMotorista } from '../services/boleta.service.js';
 import { UPLOADS_BOLETAS_DIR, uploadBoleta } from '../config/uploadsBoleta.js';
+import { convertirHeicSiCorresponde } from '../utils/imagenHeic.js';
 import { logger } from '../utils/logger.js';
 
 export { UPLOADS_BOLETAS_DIR };
@@ -73,6 +74,7 @@ router.post(
   '/:motoristaId',
   requireRole('Supervisor', 'Digitador', 'Gerente', 'Motorista'),
   uploadBoleta.single('imagen'),
+  convertirHeicSiCorresponde(),
   asyncHandler(async (req, res) => {
     const motoristaId = Number(req.params.motoristaId);
     const { fecha, sucursalId } = req.query;

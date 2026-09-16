@@ -6,6 +6,7 @@ import { pool } from '../config/db.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { TIPOS_DOCUMENTO_PERSONAL } from '../config/documentosPersonal.js';
+import { esExtensionHeic, elegirExtensionPorNombre, convertirHeicSiCorresponde } from '../utils/imagenHeic.js';
 
 const router = Router();
 router.use(authenticate);
@@ -15,22 +16,28 @@ export const DOCUMENTOS_DIR = path.join(UPLOADS_DIR, 'documentos');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 fs.mkdirSync(DOCUMENTOS_DIR, { recursive: true });
 
-const EXTENSIONES_FOTO = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' };
-const EXTENSIONES_DOCUMENTO = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'application/pdf': '.pdf' };
+const EXTENSIONES_FOTO = {
+  'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp',
+  'image/heic': '.heic', 'image/heif': '.heif'
+};
+const EXTENSIONES_DOCUMENTO = {
+  'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'application/pdf': '.pdf',
+  'image/heic': '.heic', 'image/heif': '.heif'
+};
 const TIPOS_DOCUMENTO = TIPOS_DOCUMENTO_PERSONAL.map((d) => d.tipo);
 
 const uploadFoto = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, UPLOADS_DIR),
     filename: (req, file, cb) => {
-      const ext = EXTENSIONES_FOTO[file.mimetype] || path.extname(file.originalname) || '.jpg';
+      const ext = EXTENSIONES_FOTO[file.mimetype] || elegirExtensionPorNombre(file.originalname) || '.jpg';
       cb(null, `${req.params.id}-${Date.now()}${ext}`);
     }
   }),
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (!EXTENSIONES_FOTO[file.mimetype]) {
-      return cb(new Error('Formato de imagen no soportado. Usa JPG, PNG o WEBP.'));
+    if (!EXTENSIONES_FOTO[file.mimetype] && !esExtensionHeic(file.originalname)) {
+      return cb(new Error('Formato de imagen no soportado. Usa JPG, PNG, WEBP o una foto HEIC de iPhone.'));
     }
     cb(null, true);
   }
@@ -40,14 +47,14 @@ const uploadDocumento = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, DOCUMENTOS_DIR),
     filename: (req, file, cb) => {
-      const ext = EXTENSIONES_DOCUMENTO[file.mimetype] || path.extname(file.originalname) || '.pdf';
+      const ext = EXTENSIONES_DOCUMENTO[file.mimetype] || elegirExtensionPorNombre(file.originalname) || '.pdf';
       cb(null, `${req.params.id}-${req.params.tipo}-${Date.now()}${ext}`);
     }
   }),
   limits: { fileSize: 8 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (!EXTENSIONES_DOCUMENTO[file.mimetype]) {
-      return cb(new Error('Formato no soportado. Usa JPG, PNG o PDF.'));
+    if (!EXTENSIONES_DOCUMENTO[file.mimetype] && !esExtensionHeic(file.originalname)) {
+      return cb(new Error('Formato no soportado. Usa JPG, PNG, PDF o una foto HEIC de iPhone.'));
     }
     cb(null, true);
   }
@@ -334,7 +341,7 @@ router.post('/:id/dar-de-baja', requireRole('Admin', 'Supervisor'), asyncHandler
 }));
 
 // POST /api/personal/:id/foto — sube/reemplaza la foto de la persona.
-router.post('/:id/foto', requireRole('Admin', 'Supervisor'), uploadFoto.single('foto'), asyncHandler(async (req, res) => {
+router.post('/:id/foto', requireRole('Admin', 'Supervisor'), uploadFoto.single('foto'), convertirHeicSiCorresponde(), asyncHandler(async (req, res) => {
   const personaId = req.params.id;
   if (!req.file) {
     return res.status(400).json({ error: 'No se recibió ningún archivo.' });
@@ -365,7 +372,7 @@ router.get('/:id/foto', asyncHandler(async (req, res) => {
 }));
 
 // POST /api/personal/:id/documentos/:tipo — sube/reemplaza un documento (DPI, RECIBO_LUZ, LICENCIA).
-router.post('/:id/documentos/:tipo', requireRole('Admin', 'Supervisor'), validarTipoDocumento, uploadDocumento.single('documento'), asyncHandler(async (req, res) => {
+router.post('/:id/documentos/:tipo', requireRole('Admin', 'Supervisor'), validarTipoDocumento, uploadDocumento.single('documento'), convertirHeicSiCorresponde(), asyncHandler(async (req, res) => {
   const personaId = req.params.id;
   const tipo = req.params.tipo;
   if (!req.file) {
