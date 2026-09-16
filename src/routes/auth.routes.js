@@ -23,7 +23,7 @@ async function cargarRolesYSucursales(usuarioId) {
     const [propias] = await pool.query(
       `SELECT s.sucursal_id AS id, s.nombre
        FROM usuario_sucursal us JOIN sucursal s ON s.sucursal_id = us.sucursal_id
-       WHERE us.usuario_id = ? AND s.visible_operativa = 1`,
+       WHERE us.usuario_id = ? AND s.estado = 'A' AND s.visible_operativa = 1`,
       [usuarioId]
     );
     sucursales = propias;
