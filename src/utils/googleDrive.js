@@ -24,6 +24,35 @@ function obtenerDrive() {
   return driveClient;
 }
 
+const MESES_ES = [
+  'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'
+];
+
+// Nombre de carpeta pedido por gerencia para la segunda copia en Drive,
+// ej. "Semana40 lunes 14 al domingo 20 de septiembre 2026". Semana ISO
+// (lunes a domingo), igual criterio que calcularSemanaISO en informes.routes.js.
+function calcularCarpetaSemana(fechaStr) {
+  const fecha = new Date(`${fechaStr}T00:00:00`);
+  const diaSemana = (fecha.getDay() + 6) % 7; // 0=lunes..6=domingo
+  const lunes = new Date(fecha);
+  lunes.setDate(fecha.getDate() - diaSemana);
+  const domingo = new Date(lunes);
+  domingo.setDate(lunes.getDate() + 6);
+
+  const objetivo = new Date(lunes);
+  objetivo.setDate(objetivo.getDate() + 3); // jueves de esa semana (define el año/semana ISO)
+  const primerJueves = new Date(objetivo.getFullYear(), 0, 4);
+  const diff = objetivo - primerJueves;
+  const semana = 1 + Math.round(diff / (7 * 24 * 60 * 60 * 1000));
+
+  const rango = lunes.getMonth() === domingo.getMonth()
+    ? `lunes ${lunes.getDate()} al domingo ${domingo.getDate()} de ${MESES_ES[lunes.getMonth()]}`
+    : `lunes ${lunes.getDate()} de ${MESES_ES[lunes.getMonth()]} al domingo ${domingo.getDate()} de ${MESES_ES[domingo.getMonth()]}`;
+
+  return `Semana${semana} ${rango} ${domingo.getFullYear()}`;
+}
+
 async function buscarOCrearCarpeta(drive, nombre, carpetaPadreId) {
   const nombreEscapado = nombre.replace(/'/g, "\\'");
   const q = `name = '${nombreEscapado}' and '${carpetaPadreId}' in parents ` +
@@ -48,14 +77,16 @@ async function buscarOCrearCarpeta(drive, nombre, carpetaPadreId) {
  * devuelve null y deja el detalle en el log — el guardado local de
  * la boleta no debe depender de esto.
  */
-export async function subirBoletaADrive({ rutaLocal, nombreArchivo, mimeType, fecha, cad }) {
+export async function subirBoletaADrive({ rutaLocal, nombreArchivo, mimeType, fecha, cad, cadCodigo }) {
   const drive = obtenerDrive();
   if (!drive) {
     logger.warn('[drive] Faltan variables de OAuth2 (GOOGLE_OAUTH_CLIENT_ID/SECRET/REFRESH_TOKEN) o GOOGLE_DRIVE_FOLDER_ID: se omite la subida a Drive.', { nombreArchivo, fecha, cad });
     return null;
   }
 
+  let resultado = null;
   try {
+    // Estructura histórica: carga_semanal1/<fecha>/<CAD>/archivo
     const carpetaFecha = await buscarOCrearCarpeta(drive, fecha, env.googleDrive.folderId);
     const carpetaCad = await buscarOCrearCarpeta(drive, cad, carpetaFecha);
 
@@ -64,11 +95,34 @@ export async function subirBoletaADrive({ rutaLocal, nombreArchivo, mimeType, fe
       media: { mimeType, body: fs.createReadStream(rutaLocal) },
       fields: 'id, webViewLink'
     });
-    return { driveFileId: data.id, driveWebLink: data.webViewLink };
+    resultado = { driveFileId: data.id, driveWebLink: data.webViewLink };
   } catch (err) {
     logger.error('[drive] No se pudo subir la boleta a Google Drive: ' + err.message, { nombreArchivo, fecha, cad, stack: err.stack });
     return null;
   }
+
+  // Segunda copia pedida por gerencia, en la misma cuenta de Drive, bajo
+  // MandameAPP/<Semana N ...>/<CODIGO-CAD>/archivo. "MandameAPP" se crea
+  // directo en la raíz de "Mi unidad" (alias 'root' de la API) — no
+  // requiere ningún ID de carpeta configurado a mano. Si esta segunda
+  // subida falla, no debe afectar el resultado de la copia histórica
+  // (que ya se guardó bien), solo se deja registrado en el log.
+  try {
+    const carpetaRaizApp = await buscarOCrearCarpeta(drive, 'MandameAPP', 'root');
+    const carpetaSemana = await buscarOCrearCarpeta(drive, calcularCarpetaSemana(fecha), carpetaRaizApp);
+    const nombreCadConCodigo = cadCodigo ? `${cadCodigo}-${cad}` : cad;
+    const carpetaCadSemanal = await buscarOCrearCarpeta(drive, nombreCadConCodigo, carpetaSemana);
+
+    await drive.files.create({
+      requestBody: { name: nombreArchivo, parents: [carpetaCadSemanal] },
+      media: { mimeType, body: fs.createReadStream(rutaLocal) },
+      fields: 'id'
+    });
+  } catch (err) {
+    logger.error('[drive] No se pudo subir la copia semanal (MandameAPP) de la boleta: ' + err.message, { nombreArchivo, fecha, cad, stack: err.stack });
+  }
+
+  return resultado;
 }
 
 /**

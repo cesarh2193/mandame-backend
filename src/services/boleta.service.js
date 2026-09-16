@@ -26,7 +26,10 @@ export async function guardarBoletaMotorista({ motoristaId, sucursalId, fecha, a
      WHERE m.persona_id = ?`,
     [motoristaId]
   );
-  const [[sucursal]] = await pool.query('SELECT nombre FROM sucursal WHERE sucursal_id = ?', [Number(sucursalId)]);
+  const [[sucursal]] = await pool.query(
+    'SELECT nombre, codigo_cad AS codigoCad FROM sucursal WHERE sucursal_id = ?',
+    [Number(sucursalId)]
+  );
 
   const [[existente]] = await pool.query(
     'SELECT * FROM boleta_motorista WHERE motorista_id = ? AND fecha = ?',
@@ -58,7 +61,8 @@ export async function guardarBoletaMotorista({ motoristaId, sucursalId, fecha, a
     nombreArchivo: nombreDrive,
     mimeType: archivo.mimetype,
     fecha,
-    cad: sucursal?.nombre || 'CAD'
+    cad: sucursal?.nombre || 'CAD',
+    cadCodigo: sucursal?.codigoCad || ''
   });
 
   if (existente) {
