@@ -13,7 +13,7 @@ router.get('/en-turno', requireAccesoSucursal((req) => req.query.sucursalId), as
   const { sucursalId } = req.query;
   const [rows] = await pool.query(
     `SELECT a.asignacion_id AS asignacionId, CONCAT(p.nombres,' ',p.apellidos) AS nombre,
-            s.nombre AS sucursal,
+            s.nombre AS sucursal, m.tipo_motorista AS tipoMotorista,
             TIME_FORMAT(ing.fecha_hora, '%H:%i') AS horaIngreso
      FROM asignacion a
      JOIN motorista m ON m.persona_id = a.motorista_id
@@ -47,6 +47,10 @@ router.post('/:asignacionId', requireRole('Supervisor', 'Digitador', 'Gerente', 
   const { cantidadEntregas, tarifaId, esExtra = false, observacion = null, horaIngreso, horaSalida } = req.body;
   const puedeAutorizar = req.user?.roles?.some((r) => ['Supervisor', 'Gerente', 'Admin'].includes(r));
 
+  if (!(Number(cantidadEntregas) > 0)) {
+    return res.status(400).json({ error: 'La cantidad de repartos tiene que ser mayor a 0 para poder guardar el cierre.' });
+  }
+
   if (horaIngreso) {
     await callProcedure('sp_corregir_ingreso', [req.params.asignacionId, horaIngreso, req.user.usuarioId]);
   }
@@ -73,6 +77,9 @@ router.put('/reparto/:repartoId', asyncHandler(async (req, res) => {
     return res.status(403).json({ error: 'Solo un Administrador puede corregir un cierre ya guardado.' });
   }
   const { cantidadEntregas, horaSalida } = req.body;
+  if (!(Number(cantidadEntregas) > 0)) {
+    return res.status(400).json({ error: 'La cantidad de repartos tiene que ser mayor a 0.' });
+  }
   await callProcedure('sp_corregir_cierre', [req.params.repartoId, cantidadEntregas, horaSalida, req.user.usuarioId]);
   res.json({ ok: true });
 }));
