@@ -294,7 +294,7 @@ async function obtenerFilasInformeSemanal(req, anio, semana, sucursalId) {
             s.codigo_cad AS codigoCad, s.nombre AS sucursal,
             p.codigo_interno AS codigo, CONCAT(p.nombres,' ',p.apellidos) AS nombre,
             m.licencia, m.tipo_motorista AS tipoMotorista,
-            r.fecha, t.valor AS tarifaValor,
+            r.fecha, r.observacion, t.valor AS tarifaValor,
             TIMESTAMPDIFF(MINUTE, ing.fecha_hora, sal.fecha_hora) AS minutosTrabajados
      FROM reparto r
      JOIN asignacion a ON a.asignacion_id = r.asignacion_id
@@ -323,7 +323,8 @@ async function obtenerFilasInformeSemanal(req, anio, semana, sucursalId) {
         motoristaId: fila.motoristaId, codigoCad: fila.codigoCad, sucursal: fila.sucursal,
         codigo: fila.codigo, nombre: fila.nombre, licencia: fila.licencia, tipoMotorista: fila.tipoMotorista,
         dias: { lu: false, ma: false, mi: false, ju: false, vi: false, sa: false, do: false },
-        totalDiasLaborados: 0, totalHorasTrabajadas: 0, totalDiasSinIva: 0, ultimaTarifa: null
+        totalDiasLaborados: 0, totalHorasTrabajadas: 0, totalDiasSinIva: 0, ultimaTarifa: null,
+        diasDescanso: []
       });
     }
     const grupo = porMotorista.get(clave);
@@ -332,6 +333,15 @@ async function obtenerFilasInformeSemanal(req, anio, semana, sucursalId) {
     const indiceDia = (fechaDia.getDay() + 6) % 7; // 0=lunes..6=domingo
     grupo.dias[DIAS_SEMANA[indiceDia].key] = true;
     grupo.totalDiasLaborados += 1;
+
+    // El día de descanso pagado (ver POST /asignaciones/descanso) crea
+    // un reparto normal con 0 repartos y esta observación — se cuenta
+    // igual que cualquier día trabajado para el pago, pero se deja
+    // visible en "Comentarios" para que quede claro por qué ese día no
+    // tiene entregas.
+    if (fila.observacion?.toUpperCase().includes('DESCANSO')) {
+      grupo.diasDescanso.push(DIAS_SEMANA[indiceDia].nombre);
+    }
 
     const horasDia = fila.minutosTrabajados != null ? Math.min(fila.minutosTrabajados / 60, 8) : 0;
     grupo.totalHorasTrabajadas += horasDia;
@@ -351,6 +361,7 @@ async function obtenerFilasInformeSemanal(req, anio, semana, sucursalId) {
       totalGeneralIva,
       totalGeneral: totalGeneralSinIva + totalGeneralIva,
       tipoPlaza: g.tipoMotorista === 'TURNO' ? 'Turno FDS 8 horas' : 'Plaza fija',
+      comentarios: g.diasDescanso.length ? `Descanso: ${g.diasDescanso.join(', ')}` : '',
       semana,
       rangoFecha: `${formatearFecha(lunes)} AL ${formatearFecha(domingo)}`
     };
@@ -1505,7 +1516,7 @@ router.get('/semanal/excel', requireRole(), asyncHandler(async (req, res) => {
       totalGeneralIva: Math.round(fila.totalGeneralIva * 100) / 100,
       totalGeneral: Math.round(fila.totalGeneral * 100) / 100,
       tipoPlaza: fila.tipoPlaza,
-      comentarios: '',
+      comentarios: fila.comentarios || '',
       semana: fila.semana,
       rangoFecha: fila.rangoFecha
     });

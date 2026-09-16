@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool, callProcedure } from '../config/db.js';
 import { authenticate, requireRole, requireAccesoSucursal } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
+import { autorizarYNotificar } from '../services/autorizacion.service.js';
 
 const router = Router();
 router.use(authenticate);
@@ -165,6 +166,86 @@ router.get('/', requireAccesoSucursal((req) => req.query.sucursalId), asyncHandl
   );
   res.json(rows.map((r) => ({ ...r, marcoIngreso: !!r.marcoIngreso, cerroTurno: !!r.cerroTurno })));
 }));
+
+// POST /api/asignaciones/descanso  { sucursalId, fecha, motoristaIds: [] }
+// Día de descanso PAGADO para motoristas Fijos: a diferencia de un
+// Turno (que solo trabaja fin de semana y cobra por día trabajado), un
+// Fijo trabaja todos los días salvo un día libre a la semana que no
+// tiene un día fijo (a veces lunes, a veces jueves...) — pero ese día
+// igual se le paga completo. En vez de mandarlo a marcar ingreso/salida
+// y cerrar turno con 0 repartos (que ya no se permite, ver el mínimo
+// de 1 repartos en cierre-turno.routes.js), este endpoint hace todo el
+// ciclo de una sola vez: asigna, marca ingreso/salida con un horario
+// nominal de 8 horas (no son horas reales trabajadas, son solo para
+// que "horas trabajadas" del informe semanal no quede en 0), cierra el
+// turno con 0 repartos y una observación explícita, y autoriza — así
+// ese día cuenta como pagado en el Informe semanal exactamente igual
+// que un día normal, sin que nadie tenga que pasar por Cierre de turno.
+//
+// Solo aplica a motoristas Fijos: un Turno no tiene este concepto de
+// "día libre pagado entre semana", así que se rechaza si alguno de los
+// seleccionados no es Fijo.
+router.post('/descanso',
+  requireRole('Supervisor', 'Gerente'),
+  requireAccesoSucursal((req) => req.body.sucursalId),
+  asyncHandler(async (req, res) => {
+    const { sucursalId, fecha, motoristaIds } = req.body;
+    if (!Array.isArray(motoristaIds) || motoristaIds.length === 0) {
+      return res.status(400).json({ error: 'Selecciona al menos un motorista.' });
+    }
+
+    const [tipos] = await pool.query(
+      `SELECT persona_id AS motoristaId, tipo_motorista AS tipoMotorista
+       FROM motorista WHERE persona_id IN (?)`,
+      [motoristaIds]
+    );
+    const algunNoFijo = tipos.some((t) => t.tipoMotorista !== 'FIJO');
+    if (algunNoFijo || tipos.length !== motoristaIds.length) {
+      return res.status(400).json({ error: 'El descanso pagado solo aplica a motoristas Fijos. Quita de la selección a los de Turno.' });
+    }
+
+    const [[tarifaFijo]] = await pool.query(
+      `SELECT tarifa_id AS id FROM tarifa
+       WHERE tipo = 'FIJO' AND estado = 'A' AND descripcion NOT LIKE '%ASUETO%'
+       ORDER BY tarifa_id LIMIT 1`
+    );
+    if (!tarifaFijo) {
+      return res.status(409).json({ error: 'No hay una tarifa activa de tipo Fijo configurada en Catálogos > Tarifas.' });
+    }
+
+    await callProcedure('sp_asignar_motoristas_lote', [
+      motoristaIds.join(','), sucursalId, fecha, fecha, 'TITULAR', req.user.usuarioId
+    ]);
+
+    const [creadas] = await pool.query(
+      `SELECT asignacion_id FROM asignacion
+       WHERE sucursal_id = ? AND fecha_inicio = ? AND fecha_fin = ? AND tipo_asignacion = 'TITULAR'
+         AND estado = 'A' AND motorista_id IN (?)`,
+      [sucursalId, fecha, fecha, motoristaIds]
+    );
+
+    const repartoIds = [];
+    for (const { asignacion_id } of creadas) {
+      await pool.query(
+        `INSERT INTO asistencia_marca (asignacion_id, tipo_marca_id, fecha_hora, usuario_registro_id)
+         VALUES (?, (SELECT tipo_marca_id FROM catalogo_tipo_marca WHERE nombre = 'INGRESO'), ?, ?)`,
+        [asignacion_id, `${fecha} 08:00:00`, req.user.usuarioId]
+      );
+      const [repartoRow] = await callProcedure('sp_cerrar_turno', [
+        asignacion_id, 0, tarifaFijo.id, null, 0, 'Descanso (día de descanso, pago completo)',
+        req.user.usuarioId, `${fecha} 16:00:00`
+      ]);
+      repartoIds.push(repartoRow.repartoId);
+    }
+
+    if (repartoIds.length === 0) {
+      return res.status(409).json({ error: 'Ninguno de los motoristas seleccionados estaba disponible para asignar hoy.' });
+    }
+
+    const { autorizados, correosEnviados } = await autorizarYNotificar(repartoIds, req.user.usuarioId);
+    res.status(201).json({ ok: true, descansados: repartoIds.length, autorizados, correosEnviados });
+  })
+);
 
 // POST /api/asignaciones/:id/anular
 router.post('/:id/anular', requireRole('Supervisor', 'Gerente'), asyncHandler(async (req, res) => {
