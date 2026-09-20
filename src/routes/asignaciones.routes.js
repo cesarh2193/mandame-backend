@@ -126,11 +126,25 @@ router.post('/lote',
          AND estado = 'A' AND motorista_id IN (?)`,
       [sucursalId, fechaInicio, fechaFin, tipo, motoristaIds]
     );
+
+    // Cada asignación se marca por separado: si una ya tenía ingreso
+    // marcado ese día (reintento de un doble clic, o una asignación que
+    // ya existía de antes), esa sola falla con duplicado y se salta, en
+    // vez de que un solo motorista tire todo el lote — sin esto, un
+    // error a mitad del ciclo dejaba a medias las asignaciones/ingresos
+    // ya hechos en la misma llamada, y el usuario solo veía un error
+    // genérico sin saber qué sí se guardó.
+    let conIngreso = 0;
     for (const { asignacion_id } of creadas) {
-      await callProcedure('sp_marcar_ingreso', [asignacion_id, req.user.usuarioId]);
+      try {
+        await callProcedure('sp_marcar_ingreso', [asignacion_id, req.user.usuarioId]);
+        conIngreso += 1;
+      } catch (err) {
+        if (err.code !== 'ER_DUP_ENTRY') throw err;
+      }
     }
 
-    res.status(201).json({ ok: true, asignados: creadas.length, conIngreso: creadas.length });
+    res.status(201).json({ ok: true, asignados: creadas.length, conIngreso });
   })
 );
 
