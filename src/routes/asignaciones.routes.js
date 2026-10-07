@@ -238,18 +238,26 @@ router.post('/descanso',
       [sucursalId, fecha, fecha, motoristaIds]
     );
 
+    // Cada asignación se procesa por separado: si ya tenía su ingreso de
+    // descanso marcado (reintento de un doble clic sobre la misma
+    // selección), esa sola se salta en vez de tirar toda la petición —
+    // mismo criterio que ya se aplicó en POST /lote.
     const repartoIds = [];
     for (const { asignacion_id } of creadas) {
-      await pool.query(
-        `INSERT INTO asistencia_marca (asignacion_id, tipo_marca_id, fecha_hora, usuario_registro_id)
-         VALUES (?, (SELECT tipo_marca_id FROM catalogo_tipo_marca WHERE nombre = 'INGRESO'), ?, ?)`,
-        [asignacion_id, `${fecha} 08:00:00`, req.user.usuarioId]
-      );
-      const [repartoRow] = await callProcedure('sp_cerrar_turno', [
-        asignacion_id, 0, tarifaFijo.id, null, 0, 'Día de Descanso',
-        req.user.usuarioId, `${fecha} 16:00:00`
-      ]);
-      repartoIds.push(repartoRow.repartoId);
+      try {
+        await pool.query(
+          `INSERT INTO asistencia_marca (asignacion_id, tipo_marca_id, fecha_hora, usuario_registro_id)
+           VALUES (?, (SELECT tipo_marca_id FROM catalogo_tipo_marca WHERE nombre = 'INGRESO'), ?, ?)`,
+          [asignacion_id, `${fecha} 08:00:00`, req.user.usuarioId]
+        );
+        const [repartoRow] = await callProcedure('sp_cerrar_turno', [
+          asignacion_id, 0, tarifaFijo.id, null, 0, 'Día de Descanso',
+          req.user.usuarioId, `${fecha} 16:00:00`
+        ]);
+        repartoIds.push(repartoRow.repartoId);
+      } catch (err) {
+        if (err.code !== 'ER_DUP_ENTRY') throw err;
+      }
     }
 
     if (repartoIds.length === 0) {
