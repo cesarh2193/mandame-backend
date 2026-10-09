@@ -65,11 +65,11 @@ router.get('/', asyncHandler(async (req, res) => {
 //
 // Seguridad: solo se puede subir/reemplazar la boleta del día de
 // hoy — nunca la de una fecha pasada (o futura) — salvo que quien
-// sube sea Administrador, que sí puede corregir boletas de otros
-// días. Esto evita que el resto de roles altere el registro de un
-// día ya cerrado. La validación se hace acá, no solo en el
-// frontend, porque el frontend es fácil de saltarse llamando la API
-// directo.
+// sube sea Administrador o Supervisor, que sí pueden corregir boletas
+// de otros días. Esto evita que Digitador, Gerente o Motorista alteren
+// el registro de un día ya cerrado. La validación se hace acá, no
+// solo en el frontend, porque el frontend es fácil de saltarse
+// llamando la API directo.
 router.post(
   '/:motoristaId',
   requireRole('Supervisor', 'Digitador', 'Gerente', 'Motorista'),
@@ -94,7 +94,8 @@ router.post(
       return res.status(403).json({ error: 'Solo puedes subir tu propia boleta.' });
     }
 
-    if (!esAdministrador(req)) {
+    const puedeCorregirFechaPasada = esAdministrador(req) || (req.user?.roles ?? []).includes('Supervisor');
+    if (!puedeCorregirFechaPasada) {
       const [[{ hoy }]] = await pool.query('SELECT CURDATE() AS hoy');
       if (fecha !== hoy) {
         // multer ya guardó el archivo en disco antes de llegar acá —
