@@ -16,7 +16,7 @@ const router = Router();
 // Genera un link para que un motorista sin cuenta suba su boleta desde
 // su teléfono (compartido por WhatsApp), sin crear ningún usuario. El
 // token es la única fuente de verdad: no queda nada guardado en base de
-// datos, así que no hay forma de "revocarlo" antes de que expire (48h).
+// datos, así que no hay forma de "revocarlo" antes de que expire (12h).
 router.post('/generar-link', authenticate, requireRole('Supervisor', 'Gerente'), asyncHandler(async (req, res) => {
   const { sucursalId, fecha } = req.body;
   if (!sucursalId || !fecha) {
@@ -29,7 +29,7 @@ router.post('/generar-link', authenticate, requireRole('Supervisor', 'Gerente'),
   const token = jwt.sign(
     { scope: 'upload_boleta', sucursalId: Number(sucursalId), fecha },
     env.jwt.secret,
-    { expiresIn: '48h' }
+    { expiresIn: '12h' }
   );
 
   res.json({ token });
