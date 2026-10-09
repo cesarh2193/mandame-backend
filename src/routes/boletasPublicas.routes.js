@@ -38,12 +38,25 @@ router.post('/generar-link', authenticate, requireRole('Supervisor', 'Gerente'),
 // GET /api/boletas/publico/motoristas?token=
 // Mismo listado que "Subir boleta", pero el sucursalId/fecha vienen del
 // token (nunca de query del cliente) y solo se exponen motoristaId +
-// nombre. El motorista se identifica buscando y tocando su propio
-// nombre en la lista — no hay un paso aparte de código.
+// nombre + estado de su boleta. El motorista se identifica buscando y
+// tocando su propio nombre en la lista — no hay un paso aparte de
+// código. El estado (CARGADA/PENDIENTE) se manda para poder avisarle
+// si ya había subido una antes de dejarlo reemplazarla.
 router.get('/publico/motoristas', verificarTokenBoleta, asyncHandler(async (req, res) => {
   const { sucursalId, fecha } = req.boletaToken;
   const motoristas = await obtenerMotoristasBoleta({}, fecha, sucursalId);
-  res.json(motoristas.map((m) => ({ motoristaId: m.motoristaId, nombre: m.nombre })));
+
+  const [boletas] = await pool.query(
+    'SELECT motorista_id AS motoristaId FROM boleta_motorista WHERE fecha = ? AND sucursal_id = ?',
+    [fecha, Number(sucursalId)]
+  );
+  const cargadas = new Set(boletas.map((b) => b.motoristaId));
+
+  res.json(motoristas.map((m) => ({
+    motoristaId: m.motoristaId,
+    nombre: m.nombre,
+    estado: cargadas.has(m.motoristaId) ? 'CARGADA' : 'PENDIENTE'
+  })));
 }));
 
 // POST /api/boletas/publico/:motoristaId  (form-data: imagen; body: token)
