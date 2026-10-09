@@ -12,17 +12,6 @@ import { convertirHeicSiCorresponde } from '../utils/imagenHeic.js';
 
 const router = Router();
 
-async function codigoCoincide(motoristaId, codigo) {
-  if (!codigo) return false;
-  const [[persona]] = await pool.query(
-    `SELECT p.codigo_interno AS codigo
-     FROM motorista m JOIN persona p ON p.persona_id = m.persona_id
-     WHERE m.persona_id = ?`,
-    [motoristaId]
-  );
-  return !!persona?.codigo && String(persona.codigo).trim().toUpperCase() === String(codigo).trim().toUpperCase();
-}
-
 // POST /api/boletas/generar-link  { sucursalId, fecha }
 // Genera un link para que un motorista sin cuenta suba su boleta desde
 // su teléfono (compartido por WhatsApp), sin crear ningún usuario. El
@@ -49,24 +38,15 @@ router.post('/generar-link', authenticate, requireRole('Supervisor', 'Gerente'),
 // GET /api/boletas/publico/motoristas?token=
 // Mismo listado que "Subir boleta", pero el sucursalId/fecha vienen del
 // token (nunca de query del cliente) y solo se exponen motoristaId +
-// nombre — el código NO viaja acá, es lo que el motorista escribe para
-// confirmar identidad.
+// nombre. El motorista se identifica buscando y tocando su propio
+// nombre en la lista — no hay un paso aparte de código.
 router.get('/publico/motoristas', verificarTokenBoleta, asyncHandler(async (req, res) => {
   const { sucursalId, fecha } = req.boletaToken;
   const motoristas = await obtenerMotoristasBoleta({}, fecha, sucursalId);
   res.json(motoristas.map((m) => ({ motoristaId: m.motoristaId, nombre: m.nombre })));
 }));
 
-// POST /api/boletas/publico/verificar  { token, motoristaId, codigo }
-router.post('/publico/verificar', verificarTokenBoleta, asyncHandler(async (req, res) => {
-  const { motoristaId, codigo } = req.body;
-  if (!(await codigoCoincide(motoristaId, codigo))) {
-    return res.status(403).json({ error: 'El código no coincide con el motorista seleccionado.' });
-  }
-  res.json({ ok: true });
-}));
-
-// POST /api/boletas/publico/:motoristaId  (form-data: imagen; body: token, codigo)
+// POST /api/boletas/publico/:motoristaId  (form-data: imagen; body: token)
 router.post(
   '/publico/:motoristaId',
   verificarTokenBoleta,
@@ -75,20 +55,14 @@ router.post(
   asyncHandler(async (req, res) => {
     const motoristaId = Number(req.params.motoristaId);
     const { sucursalId, fecha } = req.boletaToken;
-    const { codigo } = req.body;
 
     if (!req.file) {
       return res.status(400).json({ error: 'Debes adjuntar una imagen.' });
     }
 
-    if (!(await codigoCoincide(motoristaId, codigo))) {
-      fs.unlink(req.file.path, () => {});
-      return res.status(403).json({ error: 'El código no coincide con el motorista seleccionado.' });
-    }
-
     // El motoristaId tiene que estar en la lista de este CAD/fecha —
     // evita usar el link para subir a nombre de cualquier persona_id
-    // que exista en el sistema, aunque el código (poco probable) coincidiera.
+    // que exista en el sistema fuera de esta lista.
     const motoristas = await obtenerMotoristasBoleta({}, fecha, sucursalId);
     if (!motoristas.some((m) => Number(m.motoristaId) === motoristaId)) {
       fs.unlink(req.file.path, () => {});
