@@ -10,8 +10,22 @@ import { generarPDFCierreCad } from '../utils/pdfCierreCad.js';
  * el cierre-de-turno de un solo paso (que autoriza al guardar).
  */
 export async function autorizarYNotificar(repartoIds, usuarioId) {
-  const gerentes = await callProcedure('sp_autorizar_repartos', [repartoIds.join(','), usuarioId]);
+  const gerentesTocados = await callProcedure('sp_autorizar_repartos', [repartoIds.join(','), usuarioId]);
   const fecha = new Date().toISOString().slice(0, 10);
+
+  // Cada usuario decide si quiere recibir estos correos automáticos
+  // (ver Usuarios y permisos > "Recibir correo de resumen de cierre") —
+  // se filtra acá en vez de en el procedimiento para no tocar el SP por
+  // esto y mantener la regla fácil de ubicar/ajustar.
+  let gerentes = gerentesTocados;
+  if (gerentesTocados.length > 0) {
+    const [consentimientos] = await pool.query(
+      `SELECT usuario_id FROM usuario WHERE usuario_id IN (?) AND recibir_notificaciones_cierre = 'S'`,
+      [gerentesTocados.map((g) => g.usuario_id)]
+    );
+    const puedenRecibir = new Set(consentimientos.map((c) => c.usuario_id));
+    gerentes = gerentesTocados.filter((g) => puedenRecibir.has(g.usuario_id));
+  }
 
   for (const g of gerentes) {
     const [[resumen]] = await pool.query(

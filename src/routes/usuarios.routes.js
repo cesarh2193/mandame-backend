@@ -10,7 +10,8 @@ router.use(authenticate, requireRole('Admin'));
 // GET /api/usuarios
 router.get('/', asyncHandler(async (req, res) => {
   const [rows] = await pool.query(
-    `SELECT u.usuario_id AS id, u.usuario, u.email AS correo, CONCAT(p.nombres,' ',p.apellidos) AS nombre, u.estado
+    `SELECT u.usuario_id AS id, u.usuario, u.email AS correo, CONCAT(p.nombres,' ',p.apellidos) AS nombre, u.estado,
+            u.recibir_notificaciones_cierre = 'S' AS recibirNotificacionesCierre
      FROM usuario u JOIN persona p ON p.persona_id = u.persona_id
      ORDER BY p.nombres`
   );
@@ -36,6 +37,7 @@ router.get('/', asyncHandler(async (req, res) => {
 
   res.json(rows.map((u) => ({
     ...u,
+    recibirNotificacionesCierre: !!u.recibirNotificacionesCierre,
     roles: rolesPorUsuario.get(u.id) || [],
     sucursales: sucursalesPorUsuario.get(u.id) || []
   })));
@@ -43,7 +45,7 @@ router.get('/', asyncHandler(async (req, res) => {
 
 // POST /api/usuarios  { personaId, usuario, correo, password, roles: [] }
 router.post('/', asyncHandler(async (req, res) => {
-  const { personaId, usuario, correo, password, roles = [], sucursalIds = [] } = req.body;
+  const { personaId, usuario, correo, password, roles = [], sucursalIds = [], recibirNotificacionesCierre = true } = req.body;
   if (!personaId || !usuario || !correo || !password) {
     return res.status(400).json({ error: 'personaId, usuario, correo y password son requeridos.' });
   }
@@ -55,8 +57,8 @@ router.post('/', asyncHandler(async (req, res) => {
     await conn.beginTransaction();
 
     const [result] = await conn.query(
-      `INSERT INTO usuario (persona_id, usuario, password_hash, email) VALUES (?, ?, ?, ?)`,
-      [personaId, usuario, hash, correo]
+      `INSERT INTO usuario (persona_id, usuario, password_hash, email, recibir_notificaciones_cierre) VALUES (?, ?, ?, ?, ?)`,
+      [personaId, usuario, hash, correo, recibirNotificacionesCierre ? 'S' : 'N']
     );
     const usuarioId = result.insertId;
 
@@ -84,7 +86,7 @@ router.post('/', asyncHandler(async (req, res) => {
 
 // PUT /api/usuarios/:id  { correo, roles: [], nuevaPassword?, estado? }
 router.put('/:id', asyncHandler(async (req, res) => {
-  const { correo, roles, nuevaPassword, estado, sucursalIds } = req.body;
+  const { correo, roles, nuevaPassword, estado, sucursalIds, recibirNotificacionesCierre } = req.body;
   const usuarioId = req.params.id;
 
   const conn = await pool.getConnection();
@@ -95,6 +97,13 @@ router.put('/:id', asyncHandler(async (req, res) => {
       await conn.query(
         `UPDATE usuario SET email = COALESCE(?, email), estado = COALESCE(?, estado) WHERE usuario_id = ?`,
         [correo, estado, usuarioId]
+      );
+    }
+
+    if (typeof recibirNotificacionesCierre === 'boolean') {
+      await conn.query(
+        `UPDATE usuario SET recibir_notificaciones_cierre = ? WHERE usuario_id = ?`,
+        [recibirNotificacionesCierre ? 'S' : 'N', usuarioId]
       );
     }
 
