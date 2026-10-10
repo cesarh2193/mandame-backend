@@ -1584,6 +1584,123 @@ async function obtenerFilasDocumentosMotoristas(req, sucursalId) {
   });
 }
 
+function colorPorcentaje(porcentaje) {
+  if (porcentaje === 100) return '#0B5C4C';
+  if (porcentaje >= 50) return '#8F5710';
+  return '#9E2A2A';
+}
+
+// Una tarjeta por motorista (código, nombre, CAD, % y las dos listas
+// de "faltan"/"ya subidos"), con encabezado (logo + fecha de
+// generación + CAD filtrado) y pie con "Página X de Y" en cada hoja.
+function dibujarDocumentosMotoristasPDF(doc, filas, nombreFiltro) {
+  const x = 40;
+  const anchoUtil = doc.page.width - 80;
+  let y = 40;
+
+  const ahora = new Date();
+  const fechaGeneracion = `${String(ahora.getDate()).padStart(2, '0')}/${String(ahora.getMonth() + 1).padStart(2, '0')}/${ahora.getFullYear()} ${String(ahora.getHours()).padStart(2, '0')}:${String(ahora.getMinutes()).padStart(2, '0')}`;
+
+  function encabezado() {
+    doc.image(LOGO_MANDAME_PATH, x + anchoUtil - 110, y, { width: 110 });
+    doc.font('Helvetica-Bold').fontSize(16).fillColor('#000').text('Documentos motoristas', x, y);
+    doc.font('Helvetica').fontSize(9).fillColor('#5B6270')
+      .text(`Generado: ${fechaGeneracion}`, x, y + 20)
+      .text(`CAD: ${nombreFiltro}`, x, y + 33);
+    doc.fillColor('#000');
+    y += 58;
+  }
+
+  function saltoDePaginaSiNecesario(altura) {
+    if (y + altura > doc.page.height - 50) {
+      doc.addPage();
+      y = 40;
+      encabezado();
+    }
+  }
+
+  encabezado();
+
+  if (filas.length === 0) {
+    doc.font('Helvetica').fontSize(11).text('No hay motoristas activos para este CAD.', x, y + 10);
+  }
+
+  filas.forEach((fila) => {
+    doc.font('Helvetica').fontSize(8.5);
+    const anchoColLista = (anchoUtil - 20) / 2;
+    const altoFaltan = fila.detalleFaltantes.length
+      ? doc.heightOfString(fila.detalleFaltantes.map((d) => `•  ${d}`).join('\n'), { width: anchoColLista })
+      : 12;
+    const altoSubidos = fila.detalleCargados.length
+      ? doc.heightOfString(fila.detalleCargados.map((d) => `•  ${d}`).join('\n'), { width: anchoColLista })
+      : 12;
+    const altoBloque = 20 + 16 + Math.max(altoFaltan, altoSubidos) + 20;
+
+    saltoDePaginaSiNecesario(altoBloque);
+
+    doc.font('Helvetica-Bold').fontSize(10.5).fillColor('#000')
+      .text(`${fila.codigo ?? ''} — ${fila.nombre}`, x, y, { width: anchoUtil - 90 });
+    doc.font('Helvetica').fontSize(8).fillColor('#5B6270')
+      .text(`${fila.codigoCad || ''} ${fila.sucursal || ''} · ${fila.documentosCargados}/${fila.totalDocumentos} documentos`, x, y + 14, { width: anchoUtil - 90 });
+    doc.font('Helvetica-Bold').fontSize(13).fillColor(colorPorcentaje(fila.porcentaje))
+      .text(`${fila.porcentaje}%`, x + anchoUtil - 70, y, { width: 70, align: 'right' });
+    doc.fillColor('#000');
+    y += 28;
+
+    doc.rect(x, y, anchoUtil, 4).fill('#E3E5EA');
+    doc.rect(x, y, anchoUtil * (fila.porcentaje / 100), 4).fill(colorPorcentaje(fila.porcentaje));
+    doc.fillColor('#000');
+    y += 12;
+
+    const yListas = y;
+    doc.font('Helvetica-Bold').fontSize(8).fillColor('#9E2A2A')
+      .text(`FALTAN (${fila.documentosFaltantes})`, x, yListas, { width: anchoColLista });
+    doc.font('Helvetica').fontSize(8).fillColor('#1C222E')
+      .text(fila.detalleFaltantes.length ? fila.detalleFaltantes.map((d) => `•  ${d}`).join('\n') : 'Ninguno — expediente completo.', x, yListas + 12, { width: anchoColLista });
+
+    doc.font('Helvetica-Bold').fontSize(8).fillColor('#0B5C4C')
+      .text(`YA SUBIDOS (${fila.documentosCargados})`, x + anchoColLista + 20, yListas, { width: anchoColLista });
+    doc.font('Helvetica').fontSize(8).fillColor('#1C222E')
+      .text(fila.detalleCargados.length ? fila.detalleCargados.map((d) => `•  ${d}`).join('\n') : 'Ninguno todavía.', x + anchoColLista + 20, yListas + 12, { width: anchoColLista });
+
+    y = yListas + 12 + Math.max(altoFaltan, altoSubidos) + 14;
+    doc.moveTo(x, y).lineTo(x + anchoUtil, y).strokeColor('#E3E5EA').stroke();
+    y += 10;
+  });
+
+  // Numeración "Página X de Y" — se dibuja al final porque recién ahí
+  // se sabe cuántas páginas hay en total (bufferPages:true lo permite).
+  const totalPaginas = doc.bufferedPageRange().count;
+  for (let i = 0; i < totalPaginas; i++) {
+    doc.switchToPage(i);
+    doc.font('Helvetica').fontSize(8).fillColor('#8B92A0')
+      .text(`Página ${i + 1} de ${totalPaginas}`, x, doc.page.height - 30, { width: anchoUtil, align: 'center' });
+  }
+}
+
+// GET /api/informes/documentos-motoristas?sucursalId=
+router.get('/documentos-motoristas', asyncHandler(async (req, res) => {
+  const { sucursalId } = req.query;
+  if (sucursalId && !tieneAccesoSucursal(req, sucursalId)) {
+    return res.status(403).json({ error: 'No tienes acceso a esta sucursal.' });
+  }
+  const filas = await obtenerFilasDocumentosMotoristas(req, sucursalId);
+
+  let nombreFiltro = 'Todos los CAD a los que tiene acceso';
+  if (sucursalId) {
+    const [[sucursal]] = await pool.query('SELECT nombre FROM sucursal WHERE sucursal_id = ?', [Number(sucursalId)]);
+    nombreFiltro = sucursal?.nombre || nombreFiltro;
+  }
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'attachment; filename="documentos-motoristas.pdf"');
+
+  const doc = new PDFDocument({ margin: 0, size: 'LETTER', bufferPages: true });
+  doc.pipe(res);
+  dibujarDocumentosMotoristasPDF(doc, filas, nombreFiltro);
+  doc.end();
+}));
+
 // GET /api/informes/documentos-motoristas/preview?sucursalId=
 router.get('/documentos-motoristas/preview', asyncHandler(async (req, res) => {
   const { sucursalId } = req.query;
