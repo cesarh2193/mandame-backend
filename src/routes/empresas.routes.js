@@ -74,6 +74,20 @@ sucursalesRouter.get('/', asyncHandler(async (req, res) => {
 
 sucursalesRouter.post('/', requireRole('Admin'), asyncHandler(async (req, res) => {
   const { empresaId, codigoCad, nombre, supervisorId } = req.body;
+
+  // Sin esto se podían crear dos CAD con el mismo código sin aviso
+  // (pasó con el 642 - ESQUIPULAS, dos sucursales distintas con el
+  // mismo código, una de ellas vacía de verdad). Se valida contra
+  // cualquier CAD existente, esté activo o no, para no repetir el
+  // código aunque el otro ya esté dado de baja.
+  const [[yaExiste]] = await pool.query(
+    `SELECT sucursal_id, nombre FROM sucursal WHERE codigo_cad = ? LIMIT 1`,
+    [codigoCad]
+  );
+  if (yaExiste) {
+    return res.status(409).json({ error: `Ya existe un CAD con el código ${codigoCad} (${yaExiste.nombre}).` });
+  }
+
   const [result] = await pool.query(
     `INSERT INTO sucursal (empresa_id, codigo_cad, nombre, supervisor_id) VALUES (?, ?, ?, ?)`,
     [empresaId, codigoCad, nombre, supervisorId || null]
