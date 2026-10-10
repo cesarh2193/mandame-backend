@@ -1529,4 +1529,113 @@ router.get('/semanal/excel', requireRole(), asyncHandler(async (req, res) => {
   res.end();
 }));
 
+// Trae, por cada motorista activo de un CAD (o de todos los CAD a los
+// que el usuario tenga acceso), cuántos de los 12 documentos de
+// TIPOS_DOCUMENTO_PERSONAL ya tiene cargados, el porcentaje, y el
+// detalle de cuáles le faltan y cuáles ya subió.
+async function obtenerFilasDocumentosMotoristas(req, sucursalId) {
+  const condiciones = [`p.estado = 'A'`, `m.estado = 'A'`];
+  const params = [];
+  if (sucursalId) {
+    condiciones.push('s.sucursal_id = ?');
+    params.push(Number(sucursalId));
+  } else if (!esAdministrador(req)) {
+    condiciones.push('s.sucursal_id IN (?)');
+    params.push(req.user.sucursalIds?.length ? req.user.sucursalIds : [0]);
+  }
+
+  const [motoristas] = await pool.query(
+    `SELECT p.persona_id AS personaId, p.codigo_interno AS codigo,
+            CONCAT(p.nombres,' ',p.apellidos) AS nombre,
+            s.sucursal_id AS sucursalId, s.codigo_cad AS codigoCad, s.nombre AS sucursal
+     FROM persona p
+     JOIN motorista m ON m.persona_id = p.persona_id
+     JOIN sucursal s ON s.sucursal_id = p.sucursal_base_id
+     WHERE ${condiciones.join(' AND ')}
+     ORDER BY s.nombre, p.nombres`,
+    params
+  );
+  if (motoristas.length === 0) return [];
+
+  const [documentos] = await pool.query(
+    `SELECT persona_id AS personaId, tipo FROM persona_documento WHERE persona_id IN (?)`,
+    [motoristas.map((m) => m.personaId)]
+  );
+  const documentosPorPersona = new Map();
+  for (const d of documentos) {
+    if (!documentosPorPersona.has(d.personaId)) documentosPorPersona.set(d.personaId, new Set());
+    documentosPorPersona.get(d.personaId).add(d.tipo);
+  }
+
+  const totalDocumentos = TIPOS_DOCUMENTO_PERSONAL.length;
+  return motoristas.map((mot) => {
+    const subidos = documentosPorPersona.get(mot.personaId) ?? new Set();
+    const cargados = TIPOS_DOCUMENTO_PERSONAL.filter((d) => subidos.has(d.tipo)).map((d) => d.etiqueta);
+    const faltantes = TIPOS_DOCUMENTO_PERSONAL.filter((d) => !subidos.has(d.tipo)).map((d) => d.etiqueta);
+    return {
+      ...mot,
+      totalDocumentos,
+      documentosCargados: cargados.length,
+      documentosFaltantes: faltantes.length,
+      porcentaje: Math.round((cargados.length / totalDocumentos) * 100),
+      detalleCargados: cargados,
+      detalleFaltantes: faltantes
+    };
+  });
+}
+
+// GET /api/informes/documentos-motoristas/preview?sucursalId=
+router.get('/documentos-motoristas/preview', asyncHandler(async (req, res) => {
+  const { sucursalId } = req.query;
+  if (sucursalId && !tieneAccesoSucursal(req, sucursalId)) {
+    return res.status(403).json({ error: 'No tienes acceso a esta sucursal.' });
+  }
+  const filas = await obtenerFilasDocumentosMotoristas(req, sucursalId);
+  res.json(filas);
+}));
+
+// GET /api/informes/documentos-motoristas/excel?sucursalId=
+router.get('/documentos-motoristas/excel', asyncHandler(async (req, res) => {
+  const { sucursalId } = req.query;
+  if (sucursalId && !tieneAccesoSucursal(req, sucursalId)) {
+    return res.status(403).json({ error: 'No tienes acceso a esta sucursal.' });
+  }
+  const filas = await obtenerFilasDocumentosMotoristas(req, sucursalId);
+
+  const libro = new ExcelJS.Workbook();
+  const hoja = libro.addWorksheet('Documentos motoristas');
+  hoja.columns = [
+    { header: 'CAD', key: 'codigoCad', width: 10 },
+    { header: 'TIENDA', key: 'sucursal', width: 24 },
+    { header: 'CODIGO', key: 'codigo', width: 10 },
+    { header: 'NOMBRE', key: 'nombre', width: 30 },
+    { header: 'DOCUMENTOS CARGADOS', key: 'documentosCargados', width: 18 },
+    { header: 'DOCUMENTOS FALTANTES', key: 'documentosFaltantes', width: 18 },
+    { header: '% COMPLETO', key: 'porcentaje', width: 12 },
+    { header: 'DETALLE FALTANTES', key: 'detalleFaltantes', width: 50 },
+    { header: 'DETALLE CARGADOS', key: 'detalleCargados', width: 50 }
+  ];
+  hoja.getRow(1).font = { bold: true };
+
+  filas.forEach((fila) => {
+    hoja.addRow({
+      codigoCad: fila.codigoCad || '',
+      sucursal: fila.sucursal || '',
+      codigo: fila.codigo ?? '',
+      nombre: fila.nombre || '',
+      documentosCargados: `${fila.documentosCargados}/${fila.totalDocumentos}`,
+      documentosFaltantes: fila.documentosFaltantes,
+      porcentaje: `${fila.porcentaje}%`,
+      detalleFaltantes: fila.detalleFaltantes.join(', ') || '—',
+      detalleCargados: fila.detalleCargados.join(', ') || '—'
+    });
+  });
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="documentos-motoristas.xlsx"');
+
+  await libro.xlsx.write(res);
+  res.end();
+}));
+
 export default router;
