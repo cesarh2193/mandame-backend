@@ -45,7 +45,7 @@ router.get('/', asyncHandler(async (req, res) => {
 
 // POST /api/usuarios  { personaId, usuario, correo, password, roles: [] }
 router.post('/', asyncHandler(async (req, res) => {
-  const { personaId, usuario, correo, password, roles = [], sucursalIds = [], recibirNotificacionesCierre = true } = req.body;
+  const { personaId, usuario, correo, password, roles = [], sucursalIds = [], recibirNotificacionesCierre = false } = req.body;
   if (!personaId || !usuario || !correo || !password) {
     return res.status(400).json({ error: 'personaId, usuario, correo y password son requeridos.' });
   }
