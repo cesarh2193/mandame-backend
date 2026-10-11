@@ -51,6 +51,22 @@ router.post('/:asignacionId', requireRole('Supervisor', 'Digitador', 'Gerente', 
     return res.status(400).json({ error: 'La cantidad de repartos tiene que ser mayor a 0 para poder guardar el cierre.' });
   }
 
+  // Caso real que destapó esto: un reintento con la fecha de salida
+  // mal escrita (typo de mes, ej. 09 en vez de 10) no chocaba contra
+  // nada en asistencia_marca (la fecha ya era distinta a la del primer
+  // intento) y terminaba creando un SEGUNDO reparto para la misma
+  // asignación — doble conteo de entregas y de pago. Una asignación
+  // nunca debería tener más de un reparto activo (ni AUTORIZADO ni
+  // PENDIENTE); si ya tiene uno, hay que corregirlo desde la opción de
+  // Administrador en vez de cerrar de nuevo.
+  const [[repartoExistente]] = await pool.query(
+    `SELECT reparto_id FROM reparto WHERE asignacion_id = ? AND estado <> 'ANULADO' LIMIT 1`,
+    [req.params.asignacionId]
+  );
+  if (repartoExistente) {
+    return res.status(409).json({ error: 'Esta asignación ya tiene un cierre guardado. Si hace falta corregirlo, un Administrador puede ajustarlo.' });
+  }
+
   if (horaIngreso) {
     await callProcedure('sp_corregir_ingreso', [req.params.asignacionId, horaIngreso, req.user.usuarioId]);
   }
