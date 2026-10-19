@@ -164,7 +164,15 @@ router.post('/', requireRole('Admin', 'Supervisor'), asyncHandler(async (req, re
     return res.status(400).json({ error: 'El DPI debe tener 13 dígitos.' });
   }
   if (tambienMotorista && licencia) {
-    const [[existente]] = await pool.query('SELECT persona_id FROM motorista WHERE licencia = ?', [licencia]);
+    // Un registro Eliminado (estado 'E') no cuenta como conflicto real:
+    // ya no existe para el sistema, así que su licencia queda libre
+    // para quien se vuelva a dar de alta. Solo bloquea si la licencia
+    // pertenece a alguien Activo o Inactivo de verdad.
+    const [[existente]] = await pool.query(
+      `SELECT m.persona_id FROM motorista m JOIN persona p ON p.persona_id = m.persona_id
+       WHERE m.licencia = ? AND p.estado <> 'E'`,
+      [licencia]
+    );
     if (existente) {
       return res.status(409).json({ error: 'Ya existe un motorista registrado con esa licencia.' });
     }
@@ -239,8 +247,10 @@ router.put('/:id', requireRole('Admin', 'Supervisor'), asyncHandler(async (req, 
     return res.status(400).json({ error: 'El DPI debe tener 13 dígitos.' });
   }
   if (tambienMotorista === true && licencia) {
+    // Mismo criterio que al crear: un Eliminado no cuenta como conflicto.
     const [[existente]] = await pool.query(
-      'SELECT persona_id FROM motorista WHERE licencia = ? AND persona_id != ?',
+      `SELECT m.persona_id FROM motorista m JOIN persona p ON p.persona_id = m.persona_id
+       WHERE m.licencia = ? AND m.persona_id != ? AND p.estado <> 'E'`,
       [licencia, personaId]
     );
     if (existente) {
