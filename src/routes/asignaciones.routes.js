@@ -116,9 +116,24 @@ router.post('/lote',
     if (!(await existePlanificacion(sucursalId, fechaInicio))) {
       return res.status(409).json({ error: 'Primero registra la planificación de este CAD para esta fecha en Planificación.' });
     }
-    await callProcedure('sp_asignar_motoristas_lote', [
-      motoristaIds.join(','), sucursalId, fechaInicio, fechaFin, tipo, req.user.usuarioId
-    ]);
+    // Cada motorista se asigna con su propia llamada a la SP, y no en
+    // una sola con todos los IDs juntos: si uno ya tiene una asignación
+    // titular activa ese día (típico de una condición de carrera — otro
+    // supervisor lo asignó, o le dieron "Descanso" momentos antes), el
+    // trigger de la base de datos rechaza esa fila con un error —  antes
+    // eso hacía fallar la llamada completa y NINGÚN motorista del lote
+    // quedaba asignado, aunque el resto estuviera perfectamente bien.
+    const fallidos = [];
+    for (const motoristaId of motoristaIds) {
+      try {
+        await callProcedure('sp_asignar_motoristas_lote', [
+          String(motoristaId), sucursalId, fechaInicio, fechaFin, tipo, req.user.usuarioId
+        ]);
+      } catch (err) {
+        if (err.sqlState !== '45000') throw err;
+        fallidos.push({ motoristaId, motivo: err.sqlMessage || 'No se pudo asignar.' });
+      }
+    }
 
     const [creadas] = await pool.query(
       `SELECT asignacion_id FROM asignacion
@@ -144,7 +159,7 @@ router.post('/lote',
       }
     }
 
-    res.status(201).json({ ok: true, asignados: creadas.length, conIngreso });
+    res.status(201).json({ ok: true, asignados: creadas.length, conIngreso, fallidos });
   })
 );
 
