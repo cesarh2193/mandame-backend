@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool } from '../config/db.js';
 import { authenticate, esAdministrador, tieneAccesoSucursal } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
+import { TIPOS_DOCUMENTO_PERSONAL } from '../config/documentosPersonal.js';
 
 const router = Router();
 router.use(authenticate);
@@ -126,6 +127,54 @@ router.get('/repartos-hoy', asyncHandler(async (req, res) => {
   );
 
   res.json(rows);
+}));
+
+// GET /api/dashboard/documentos-cad?sucursalId=
+// % de completitud del expediente de documentos (los 12 de
+// TIPOS_DOCUMENTO_PERSONAL) de los motoristas activos, agregado por
+// CAD — para ver de un vistazo qué CAD se está quedando atrás en subir
+// los documentos de su personal. Mismo alcance de acceso que /hoy.
+router.get('/documentos-cad', asyncHandler(async (req, res) => {
+  const { sucursalId } = req.query;
+  let filtroSucursal = '1=1';
+  const params = [];
+
+  if (sucursalId) {
+    if (!tieneAccesoSucursal(req, sucursalId)) {
+      return res.status(403).json({ error: 'No tienes acceso a esta sucursal.' });
+    }
+    filtroSucursal = 's.sucursal_id = ?';
+    params.push(Number(sucursalId));
+  } else if (!esAdministrador(req)) {
+    filtroSucursal = 's.sucursal_id IN (?)';
+    params.push(req.user.sucursalIds?.length ? req.user.sucursalIds : [0]);
+  }
+
+  const tipos = TIPOS_DOCUMENTO_PERSONAL.map((d) => d.tipo);
+  const [rows] = await pool.query(
+    `SELECT s.sucursal_id AS id, s.nombre AS sucursal,
+            COUNT(DISTINCT m.persona_id) AS totalMotoristas,
+            COUNT(pd.documento_id) AS totalCargados
+     FROM sucursal s
+     JOIN persona p ON p.sucursal_base_id = s.sucursal_id AND p.estado = 'A'
+     JOIN motorista m ON m.persona_id = p.persona_id AND m.estado = 'A'
+     LEFT JOIN persona_documento pd ON pd.persona_id = m.persona_id AND pd.tipo IN (?)
+     WHERE s.estado = 'A' AND s.visible_operativa = 1 AND ${filtroSucursal}
+     GROUP BY s.sucursal_id, s.nombre
+     HAVING totalMotoristas > 0
+     ORDER BY s.nombre`,
+    [tipos, ...params]
+  );
+
+  const totalPosiblesPorMotorista = tipos.length;
+  res.json(rows.map((r) => ({
+    id: r.id,
+    sucursal: r.sucursal,
+    totalMotoristas: r.totalMotoristas,
+    totalCargados: r.totalCargados,
+    totalPosibles: r.totalMotoristas * totalPosiblesPorMotorista,
+    porcentaje: Math.round((r.totalCargados / (r.totalMotoristas * totalPosiblesPorMotorista)) * 100)
+  })));
 }));
 
 export default router;
